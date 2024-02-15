@@ -8,5 +8,5 @@ type ExpressionState interface {
 	// Returns an array of data that represents an initial state. These
 	// can be passed into arguments that can be used to evaluate an
 	// expression
-	InitState() []interface{}
+	InitState() interface{}
 }

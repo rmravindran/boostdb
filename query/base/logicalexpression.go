@@ -51,11 +51,11 @@ func NewLogicalExpression(
 	rightExpr *stdlib.MaybeOp[Expression]) *stdlib.MaybeOp[Expression] {
 
 	if leftExpr == nil {
-		leftExpr = stdlib.JustOp[Expression](NewLiteralBoolExpression(false))
+		leftExpr = stdlib.JustOp[Expression](NewLiteralBoolConstExpression(false))
 	}
 
 	if rightExpr == nil {
-		rightExpr = stdlib.JustOp[Expression](NewLiteralBoolExpression(false))
+		rightExpr = stdlib.JustOp[Expression](NewLiteralBoolConstExpression(false))
 	}
 
 	expr := &LogicalExpression{
@@ -138,12 +138,12 @@ func (be *LogicalExpression) Evaluate(args ...interface{}) *stdlib.MaybeOp[Expre
 
 	switch be.opType {
 	case LogicalAnd:
-		return stdlib.JustOp[Expression](NewLiteralBoolExpression(leftValue.BoolValue && rightValue.BoolValue))
+		return stdlib.JustOp[Expression](NewLiteralBoolConstExpression(leftValue.BoolValue && rightValue.BoolValue))
 	case LogicalOr:
 		// TODO Optimize the OR operator to short-circuit the above for-loop
-		return stdlib.JustOp[Expression](NewLiteralBoolExpression(leftValue.BoolValue || rightValue.BoolValue))
+		return stdlib.JustOp[Expression](NewLiteralBoolConstExpression(leftValue.BoolValue || rightValue.BoolValue))
 	default:
-		return stdlib.JustOp[Expression](NewLiteralBoolExpression(be.evaluateOperation(&leftValue, &rightValue)))
+		return stdlib.JustOp[Expression](NewLiteralBoolConstExpression(be.evaluateOperation(&leftValue, &rightValue)))
 	}
 }
 
