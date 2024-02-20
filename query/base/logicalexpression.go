@@ -43,6 +43,22 @@ type LogicalExpression struct {
 	rightExpr *stdlib.MaybeOp[Expression]
 }
 
+// Logical Expression State
+type LogicalExpressionState struct {
+
+	// State of the expression if the left is a complex expression type
+	leftExprState ExpressionState
+
+	// State of the expression if the right is a complex expression type
+	rightExprState ExpressionState
+
+	// The const indicator for left expression
+	isLeftConst bool
+
+	// The const indicator for right expression
+	isRightConst bool
+}
+
 // Create a new boolean expression
 func NewLogicalExpression(
 	sqlOpType SqlOpType,
@@ -51,11 +67,11 @@ func NewLogicalExpression(
 	rightExpr *stdlib.MaybeOp[Expression]) *stdlib.MaybeOp[Expression] {
 
 	if leftExpr == nil {
-		leftExpr = stdlib.JustOp[Expression](NewLiteralBoolConstExpression(false))
+		leftExpr = stdlib.JustOp[Expression](NewLiteralBoolConstExpression("", false))
 	}
 
 	if rightExpr == nil {
-		rightExpr = stdlib.JustOp[Expression](NewLiteralBoolConstExpression(false))
+		rightExpr = stdlib.JustOp[Expression](NewLiteralBoolConstExpression("", false))
 	}
 
 	expr := &LogicalExpression{
@@ -93,7 +109,7 @@ func (be *LogicalExpression) SqlOp() SqlOpType {
 }
 
 // Evaluate the expression
-func (be *LogicalExpression) Evaluate(args ...interface{}) *stdlib.MaybeOp[Expression] {
+func (be *LogicalExpression) Evaluate(args interface{}) *stdlib.MaybeOp[Expression] {
 	var leftExpr *stdlib.MaybeOp[Expression] = be.leftExpr
 	var rightExpr *stdlib.MaybeOp[Expression] = be.rightExpr
 	var (
@@ -101,34 +117,26 @@ func (be *LogicalExpression) Evaluate(args ...interface{}) *stdlib.MaybeOp[Expre
 		rightDone bool = false
 	)
 
-	argIndex := 0
 	var leftValue, rightValue _LiteralValue
 
-	leftDone = be.evaluateIfLiteralExpression(leftExpr, &leftValue, args...)
-	rightDone = be.evaluateIfLiteralExpression(rightExpr, &rightValue, args...)
+	leftArg := args.([]interface{})[0]
+	rightArg := args.([]interface{})[1]
 
-	for !leftDone || !rightDone {
+	leftDone = be.evaluateIfLiteralExpression(leftExpr, &leftValue, leftArg)
+	rightDone = be.evaluateIfLiteralExpression(rightExpr, &rightValue, rightArg)
+
+	if !leftDone {
+		leftExpr = leftExpr.Evaluate(leftArg)
+		leftDone = be.evaluateIfLiteralExpression(leftExpr, &leftValue, nil)
 		if !leftDone {
-			leftExpr = leftExpr.Evaluate(args...)
-
-			if args == nil || argIndex >= len(args) {
-				return stdlib.ErrorOp[Expression](errors.New("not enough arguments"))
-			}
-
-			// TODO Check if this is an error expression
-			argIndex++
-			leftDone = be.evaluateIfLiteralExpression(leftExpr, &leftValue)
+			return stdlib.ErrorOp[Expression](errors.New("evaluation failed"))
 		}
-
+	}
+	if !rightDone {
+		rightExpr = rightExpr.Evaluate(rightArg)
+		rightDone = be.evaluateIfLiteralExpression(rightExpr, &rightValue, nil)
 		if !rightDone {
-			if args == nil || argIndex >= len(args) {
-				return stdlib.ErrorOp[Expression](errors.New("not enough arguments"))
-			}
-
-			rightExpr = rightExpr.Evaluate(args[argIndex])
-			// TODO Check if this is an error expression
-			argIndex++
-			rightDone = be.evaluateIfLiteralExpression(rightExpr, &rightValue)
+			return stdlib.ErrorOp[Expression](errors.New("evaluation failed"))
 		}
 	}
 
@@ -138,12 +146,12 @@ func (be *LogicalExpression) Evaluate(args ...interface{}) *stdlib.MaybeOp[Expre
 
 	switch be.opType {
 	case LogicalAnd:
-		return stdlib.JustOp[Expression](NewLiteralBoolConstExpression(leftValue.BoolValue && rightValue.BoolValue))
+		return stdlib.JustOp[Expression](NewLiteralBoolConstExpression("", leftValue.BoolValue && rightValue.BoolValue))
 	case LogicalOr:
 		// TODO Optimize the OR operator to short-circuit the above for-loop
-		return stdlib.JustOp[Expression](NewLiteralBoolConstExpression(leftValue.BoolValue || rightValue.BoolValue))
+		return stdlib.JustOp[Expression](NewLiteralBoolConstExpression("", leftValue.BoolValue || rightValue.BoolValue))
 	default:
-		return stdlib.JustOp[Expression](NewLiteralBoolConstExpression(be.evaluateOperation(&leftValue, &rightValue)))
+		return stdlib.JustOp[Expression](NewLiteralBoolConstExpression("", be.evaluateOperation(&leftValue, &rightValue)))
 	}
 }
 
@@ -154,7 +162,59 @@ func (be *LogicalExpression) Value() any {
 
 // Return false to indicate that this is not a constant
 func (be *LogicalExpression) IsConstant() bool {
-	return false
+	return be.leftExpr.Value().(Expression).IsConstant() && be.rightExpr.Value().(Expression).IsConstant()
+}
+
+// Prepare an expression
+func (be *LogicalExpression) Prepare(
+	nameHandler ArgNameHandler) ExpressionState {
+
+	thisState := &LogicalExpressionState{
+		leftExprState:  be.leftExpr.Value().(Expression).Prepare(nameHandler),
+		rightExprState: be.rightExpr.Value().(Expression).Prepare(nameHandler),
+		isLeftConst:    be.leftExpr.Value().(Expression).IsConstant(),
+		isRightConst:   be.rightExpr.Value().(Expression).IsConstant(),
+	}
+
+	return thisState
+}
+
+// Return the Initial State
+func (be *LogicalExpressionState) ToArgs() interface{} {
+	return []interface{}{be.leftExprState.ToArgs(), be.rightExprState.ToArgs()}
+}
+
+// Set the value of the expression
+func (les *LogicalExpressionState) SetValue(name string, value any) error {
+
+	if les.isLeftConst && les.isRightConst {
+		return errors.New("cannot set the value of a constant logical expression")
+	}
+
+	var errLeft error = nil
+	var errRight error = nil
+	if !les.isLeftConst {
+		errLeft = les.leftExprState.SetValue(name, value)
+	}
+
+	if !les.isRightConst {
+		errRight = les.rightExprState.SetValue(name, value)
+	}
+
+	if errLeft != nil {
+		return errLeft
+	}
+
+	if errRight != nil {
+		return errRight
+	}
+
+	return nil
+}
+
+// Return true if the expression is a constant, otherwise returns false
+func (les *LogicalExpressionState) IsConstant() bool {
+	return les.leftExprState.IsConstant() && les.rightExprState.IsConstant()
 }
 
 type _LiteralValue struct {
@@ -168,19 +228,19 @@ type _LiteralValue struct {
 // Evalue the Expression based on its underlying literal type and store the
 // value in the specfied _LiteralValue struct and return true if the evaluation
 // was successful, otherwise returns false.
-func (be *LogicalExpression) evaluateIfLiteralExpression(expr *stdlib.MaybeOp[Expression], value *_LiteralValue, args ...interface{}) bool {
+func (be *LogicalExpression) evaluateIfLiteralExpression(expr *stdlib.MaybeOp[Expression], value *_LiteralValue, args interface{}) bool {
 	switch expr.Value().(type) {
 	case *LiteralBoolExpression:
-		value.BoolValue = expr.Evaluate(args...).Value().(*LiteralBoolExpression).Bool()
+		value.BoolValue = expr.Evaluate(args).Value().(*LiteralBoolExpression).Bool()
 		value.DataType = ValueTypeBool
 	case *LiteralIntExpression:
-		value.IntValue = expr.Evaluate(args...).Value().(*LiteralIntExpression).Int()
+		value.IntValue = expr.Evaluate(args).Value().(*LiteralIntExpression).Int()
 		value.DataType = ValueTypeInt
 	case *LiteralFloatExpression:
-		value.FloatValue = expr.Evaluate(args...).Value().(*LiteralFloatExpression).Float()
+		value.FloatValue = expr.Evaluate(args).Value().(*LiteralFloatExpression).Float()
 		value.DataType = ValueTypeFloat
 	case *LiteralStringExpression:
-		value.StrValue = expr.Evaluate(args...).Value().(*LiteralStringExpression).String()
+		value.StrValue = expr.Evaluate(args).Value().(*LiteralStringExpression).String()
 		value.DataType = ValueTypeString
 	default:
 		return false

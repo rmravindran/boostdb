@@ -1,5 +1,7 @@
 package base
 
+import "github.com/rmravindran/boostdb/stdlib"
+
 // There are the following types of sql operations allowed
 type SqlOpType int
 
@@ -22,7 +24,7 @@ const (
 	// columns.
 	GroupBy
 
-	// Having is an expression that filters the result set based on a condition.
+	// Having is an expression that is evaluated on aggregations.
 	Having
 
 	// OrderBy is an expression that sorts the result set by one or more
@@ -41,14 +43,24 @@ type Expression interface {
 	// Is the expression a constant
 	IsConstant() bool
 
-	// Prepare an expression
-	Prepare() ExpressionState
+	// Prepare an expression and return a clean state. The nameHandler will
+	// be used by the expression to let the user know that the expression state
+	// requires a named argument.
+	Prepare(nameHandler ArgNameHandler) ExpressionState
 }
 
-type NullArgs struct {
-}
+// The callback registration handler used when preparing an expression that
+// needs to notify the user about its external depedency on a named argument.
+type ArgNameHandler func(name string)
 
-// Create a constant null argument
-func NewNullArgs() NullArgs {
-	return NullArgs{}
+// Return the initial state values of the expression
+func PrepareInitialValues(
+	expression *stdlib.MaybeOp[Expression],
+	nameHandler ArgNameHandler) (ExpressionState, interface{}) {
+
+	if expression.Error() == nil {
+		state := expression.Value().(Expression).Prepare(nameHandler)
+		return state, state.ToArgs()
+	}
+	return nil, nil
 }

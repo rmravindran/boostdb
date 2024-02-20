@@ -5,7 +5,7 @@ type Op[T any] interface {
 
 	// Evaluates this object and returns the result operator that can either
 	// represent the resulting values of this operation or be curried further.
-	Evaluate(args ...interface{}) *MaybeOp[T]
+	Evaluate(args interface{}) *MaybeOp[T]
 
 	// Return the final value produced by the operator, otherwise returns nil
 	Value() any
@@ -54,13 +54,13 @@ func (op *MaybeOp[T]) Op() Op[T] {
 // Evalue the operator on the specified args and return a new operator that can
 // either represent the resulting values of this operation or be further
 // curried.
-func (op *MaybeOp[T]) Evaluate(args ...interface{}) *MaybeOp[T] {
+func (op *MaybeOp[T]) Evaluate(args interface{}) *MaybeOp[T] {
 
 	if op.Error() != nil {
 		return op
 	}
 
-	return op.op.Evaluate(args...)
+	return op.op.Evaluate(args)
 }
 
 // Return the final values produced by the operator, otherwise returns nil

@@ -6,6 +6,7 @@ import (
 	"github.com/pingcap/tidb/pkg/parser/ast"
 	"github.com/pingcap/tidb/pkg/parser/opcode"
 	"github.com/pingcap/tidb/pkg/parser/test_driver"
+	"github.com/rmravindran/boostdb/query/base"
 )
 
 // Where Parser state type
@@ -79,7 +80,7 @@ const (
 )
 
 type ConstantValue struct {
-	DataType    ValueType
+	DataType    base.ValueType
 	IntValue    int64
 	FloatValue  float64
 	StringValue string
