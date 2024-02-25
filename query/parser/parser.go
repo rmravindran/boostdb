@@ -7,6 +7,7 @@ import (
 	sqlparser "github.com/pingcap/tidb/pkg/parser"
 	"github.com/pingcap/tidb/pkg/parser/ast"
 	"github.com/rmravindran/boostdb/query/base"
+	"github.com/rmravindran/boostdb/stdlib"
 
 	_ "github.com/pingcap/tidb/pkg/parser/test_driver"
 )
@@ -101,7 +102,7 @@ func (v *Visitor) Enter(in ast.Node) (ast.Node, bool) {
 		if joinVisitor.IsValid {
 			// Add sources
 			for _, source := range joinVisitor.Sources {
-				v.queryOps.AddSourceFetchOp(source.SourceName, source.Alias)
+				v.queryOps.AddSourceFetchOp(source.SourceDomain, source.SourceName, source.Alias)
 			}
 
 			// Add joins
@@ -127,7 +128,7 @@ func (v *Visitor) Enter(in ast.Node) (ast.Node, bool) {
 			break
 		} else {
 			for _, field := range selectVisitor.Fields {
-				v.queryOps.AddSelectFieldOp(field.FieldName, field.Source)
+				v.queryOps.AddSelectFieldOp(field.SeriesFamilyAlias, field.Series, field.Attribute)
 			}
 		}
 
@@ -137,12 +138,18 @@ func (v *Visitor) Enter(in ast.Node) (ast.Node, bool) {
 		// also a join (with no right node).
 		v.CurrentParseState = ParsingFrom
 		n.From.Accept(v)
+		if v.Error != nil {
+			skipChildren = true
+			break
+		}
 
 		//- Parse WHERE
 		// The WHERE clause is a filter on the result set. It can also
 		// represent an implicit join condition.
-		v.CurrentParseState = ParsingWhere
-		n.Where.Accept(v)
+		if n.Where != nil {
+			v.CurrentParseState = ParsingWhere
+			n.Where.Accept(v)
+		}
 
 		// We visited everything we need explicitly
 		skipChildren = true
@@ -156,6 +163,13 @@ func (v *Visitor) Enter(in ast.Node) (ast.Node, bool) {
 
 		whereVisitor := NewWhereExpressionVisitor()
 		n.Accept(whereVisitor)
+		if whereVisitor.IsValid {
+			expr := v.convertWhereExpressionToLogicalExpression(whereVisitor.RootExpression)
+			v.queryOps.AddWhereExpression(expr)
+		} else {
+			v.Error = whereVisitor.Error
+		}
+
 		skipChildren = true
 	}
 	return in, skipChildren
@@ -164,4 +178,77 @@ func (v *Visitor) Enter(in ast.Node) (ast.Node, bool) {
 func (v *Visitor) Leave(in ast.Node) (ast.Node, bool) {
 	v.CurrentParseState = ParsingNone
 	return in, true
+}
+
+// Create LiteralConstantExpression From WhereExpression
+func (v *Visitor) createLiteralConstantExpression(
+	whereExpr *WhereExpression) *stdlib.MaybeOp[base.Expression] {
+
+	name := whereExpr.SeriesFamilyAlias + "." + whereExpr.Series + "." + whereExpr.Attribute
+
+	switch whereExpr.ValueData.DataType {
+	case base.ValueTypeInt:
+		return stdlib.JustOp[base.Expression](base.NewLiteralIntConstExpression(name, whereExpr.ValueData.IntValue))
+	case base.ValueTypeFloat:
+		return stdlib.JustOp[base.Expression](base.NewLiteralFloatConstExpression(name, whereExpr.ValueData.FloatValue))
+	case base.ValueTypeString:
+		return stdlib.JustOp[base.Expression](base.NewLiteralStringConstExpression(name, whereExpr.ValueData.StringValue))
+	}
+
+	return nil
+}
+
+// Convert WhereExpression to LogicalExpression
+func (v *Visitor) convertWhereExpressionToLogicalExpression(
+	whereExpr *WhereExpression) *stdlib.MaybeOp[base.Expression] {
+	// Convert the where expression to a logical expression
+
+	logicalOpType := base.LogicalAnd
+	switch whereExpr.Operator {
+	case WhereOpGEQ:
+		logicalOpType = base.LogicalGEQ
+	case WhereOpLEQ:
+		logicalOpType = base.LogicalLEQ
+	case WhereOpEQ:
+		logicalOpType = base.LogicalEQ
+	case WhereOpNEQ:
+		logicalOpType = base.LogicalNEQ
+	case WhereOpLT:
+		logicalOpType = base.LogicalLT
+	case WhereOpGT:
+		logicalOpType = base.LogicalGT
+	case WhereOpAND:
+		logicalOpType = base.LogicalAnd
+	case WhereOpOR:
+		logicalOpType = base.LogicalOr
+	}
+
+	var leftExpr *stdlib.MaybeOp[base.Expression] = nil
+	var rightExpr *stdlib.MaybeOp[base.Expression] = nil
+
+	// Process Left Expression
+	if whereExpr.Left.Type == ExpTypeValueExpression {
+		leftExpr = v.createLiteralConstantExpression(whereExpr.Left)
+	} else if whereExpr.Left.Type == ExpTypeLogicalExpression {
+		// Recurse
+		leftExpr = v.convertWhereExpressionToLogicalExpression(whereExpr.Left)
+	} else if whereExpr.Left.Type == ExpTypeColumnNameExpression {
+		colName := whereExpr.Left.SeriesFamilyAlias + "." + whereExpr.Left.Series + "." + whereExpr.Left.Attribute
+		leftExpr = stdlib.JustOp[base.Expression](base.NewColumnNameExpression(colName, base.Where))
+	}
+
+	// Process Right Expression
+	if whereExpr.Right.Type == ExpTypeValueExpression {
+		rightExpr = v.createLiteralConstantExpression(whereExpr.Right)
+	} else if whereExpr.Right.Type == ExpTypeLogicalExpression {
+		// Recurse
+		rightExpr = v.convertWhereExpressionToLogicalExpression(whereExpr.Right)
+	} else if whereExpr.Right.Type == ExpTypeColumnNameExpression {
+		colName := whereExpr.Right.SeriesFamilyAlias + "." + whereExpr.Right.Series + "." + whereExpr.Right.Attribute
+		rightExpr = stdlib.JustOp[base.Expression](base.NewColumnNameExpression(colName, base.Where))
+	}
+
+	// Create the logical expression
+	return stdlib.JustOp[base.Expression](base.NewLogicalExpression(
+		base.Where, logicalOpType, leftExpr, rightExpr))
 }

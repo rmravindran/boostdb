@@ -13,6 +13,7 @@ type LiteralBoolExpression struct {
 }
 
 type LiteralBoolExpressionState struct {
+	name    string
 	value   bool
 	isConst bool
 }
@@ -70,12 +71,12 @@ func (le *LiteralBoolExpression) IsConstant() bool {
 func (le *LiteralBoolExpression) Prepare(
 	nameHandler ArgNameHandler) ExpressionState {
 
-	if !le.isConst {
+	if !le.isConst && nameHandler != nil {
 		nameHandler(le.name)
 	}
 
 	return &LiteralBoolExpressionState{
-		value: le.constValue, isConst: le.isConst}
+		name: le.name, value: le.constValue, isConst: le.isConst}
 }
 
 // Returns the current bool value of the state if the expression state is
@@ -90,6 +91,10 @@ func (les *LiteralBoolExpressionState) ToArgs() interface{} {
 
 // Set the value of the expression
 func (les *LiteralBoolExpressionState) SetValue(name string, value any) error {
+	if name != les.name {
+		return nil
+	}
+
 	if les.isConst {
 		return errors.New("cannot set the value of a constant literal expression")
 	}

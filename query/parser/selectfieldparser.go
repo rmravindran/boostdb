@@ -26,9 +26,14 @@ const (
 	ParsingSelectColNameNode
 )
 
+// Boost Select Field specification states that the field selection can either
+// be a series value or series attribute. The field selection is of the form:
+// [Alias].[Series] is the syntactic sugar for [Alias].[Series].value
+// [Alias].[Series].[Attribute] is the fully qualified field name
 type SelectFieldInfo struct {
-	FieldName string
-	Source    string
+	Attribute         string
+	Series            string
+	SeriesFamilyAlias string
 }
 
 type SelectFieldsVisitor struct {
@@ -105,8 +110,23 @@ func (v *SelectFieldsVisitor) Enter(in ast.Node) (ast.Node, bool) {
 				v.IsInvalid = true
 				skipChildren = true
 			} else {
-				v.currentFieldInfo.FieldName = n.Name.O
-				v.currentFieldInfo.Source = n.Table.O
+				// [Alias].[Series] is the syntactic sugar for [Alias].[Series].value
+				// [Alias].[Series].[Attribute] is the fully qualified field name
+
+				attributeName := n.Name.O
+				seriesName := n.Table.O
+				seriesFamilyAlias := n.Schema.O
+				if n.Table.O == "" {
+					attributeName = "value"
+					seriesName = n.Name.O
+				} else if n.Schema.O == "" {
+					attributeName = "value"
+					seriesName = n.Name.O
+					seriesFamilyAlias = n.Table.O
+				}
+				v.currentFieldInfo.Attribute = attributeName
+				v.currentFieldInfo.Series = seriesName
+				v.currentFieldInfo.SeriesFamilyAlias = seriesFamilyAlias
 				v.CurrentParseState = ParsingSelectColNameNode
 			}
 		}

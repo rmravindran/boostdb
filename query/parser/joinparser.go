@@ -13,6 +13,9 @@ const (
 	// Parsing None
 	ParsingJoinNone JoinParseState = iota
 
+	// Parsing Join Node
+	ParsingJoinNode
+
 	// Parsing sources
 	ParsingJoinSources
 
@@ -37,9 +40,10 @@ type JoinInfo struct {
 }
 
 type SourceInfo struct {
-	SourceName string
-	SourceType string
-	Alias      string
+	SourceDomain string
+	SourceName   string
+	SourceType   string
+	Alias        string
 }
 
 type JoinVisitor struct {
@@ -77,18 +81,6 @@ func NewJoinVisitor() *JoinVisitor {
 	}
 }
 
-func (v *JoinVisitor) visitLeftAndRightSources(n *ast.Join) {
-	// First parse the sources, recursively in Left and Right
-	if n.Left != nil {
-		v.CurrentSource = &SourceInfo{}
-		n.Left.Accept(v)
-	}
-	if n.Right != nil {
-		v.CurrentSource = &SourceInfo{}
-		n.Right.Accept(v)
-	}
-}
-
 func (v *JoinVisitor) Enter(in ast.Node) (ast.Node, bool) {
 	skipChildren := false
 	switch n := in.(type) {
@@ -101,38 +93,39 @@ func (v *JoinVisitor) Enter(in ast.Node) (ast.Node, bool) {
 			// Root Join
 
 			v.ParsingText = "from"
-			v.CurrentJoinParseState = ParsingJoinSources
-			v.visitLeftAndRightSources(n)
-			if !v.IsValid {
-				skipChildren = true
-				break
-			}
-
-			// Now visit all the joins in the ON clause
-			if n.On != nil {
-				v.ParsingText = "join"
-				v.CurrentJoinParseState = ParsingJoinTableJoinNode
-				n.On.Accept(v)
-				// TODO
-			}
-
-			// Done with parsing the root join
-			v.CurrentJoinParseState = ParsingJoinNone
-			skipChildren = true
-		} else if v.CurrentJoinParseState != ParsingJoinSources {
-			// Some unexpected parse structure
-
-			v.IsValid = false
-			if v.Error == nil {
-				v.Error = errors.New("at '" + v.ParsingText + "'")
-				skipChildren = true
-			}
-			break
+			v.CurrentJoinParseState = ParsingJoinNode
 		}
+
+		// Parse Left
+		if n.Left != nil {
+			n.Left.Accept(v)
+		}
+
+		// Parse Right
+		if n.Right != nil && v.IsValid {
+			n.Right.Accept(v)
+		}
+
+		// Now visit all the joins in the ON clause
+		if n.On != nil && v.IsValid {
+			v.ParsingText = "join"
+			v.CurrentJoinParseState = ParsingJoinTableJoinNode
+			n.On.Accept(v)
+			v.CurrentJoinParseState = ParsingJoinNode
+		}
+
+		if !v.IsValid {
+			v.Error = errors.New("at '" + v.ParsingText + "'")
+		}
+		skipChildren = true
 	case *ast.TableSource:
+		v.CurrentSource = &SourceInfo{}
+		v.CurrentJoinParseState = ParsingJoinSources
 		v.CurrentSource.SourceType = "table"
+		v.CurrentSource.Alias = n.AsName.O
 	case *ast.TableName:
 		v.CurrentSource.SourceName = n.Name.O
+		v.CurrentSource.SourceDomain = n.Schema.O
 	case *ast.OnCondition:
 		v.ParsingText = n.Text()
 		if v.CurrentJoinParseState != ParsingJoinTableJoinNode {

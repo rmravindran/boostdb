@@ -12,7 +12,7 @@ import (
 )
 
 // Unit test the NewLogicalExpression function
-func TestBooleanExpressionNew(t *testing.T) {
+func TestLogicalExpressionNew(t *testing.T) {
 
 	// Test case 1
 	res := NewLogicalExpression(Literal, LogicalAnd, nil, nil)
@@ -53,7 +53,7 @@ func TestBooleanExpressionNew(t *testing.T) {
 }
 
 // Test with the And operator
-func TestBoolExpressionAnd(t *testing.T) {
+func TestLogicalExpressionAnd(t *testing.T) {
 	trueExpr := stdlib.JustOp[Expression](NewLiteralBoolConstExpression("", true))
 	falseExpr := stdlib.JustOp[Expression](NewLiteralBoolConstExpression("", false))
 
@@ -79,7 +79,7 @@ func TestBoolExpressionAnd(t *testing.T) {
 }
 
 // Test with the Or operator
-func TestBoolExpressionOr(t *testing.T) {
+func TestLogicalExpressionOr(t *testing.T) {
 	trueExpr := stdlib.JustOp[Expression](NewLiteralBoolConstExpression("", true))
 	falseExpr := stdlib.JustOp[Expression](NewLiteralBoolConstExpression("", false))
 
@@ -104,8 +104,63 @@ func TestBoolExpressionOr(t *testing.T) {
 	require.False(t, res.Evaluate(argValues).Value().(*LiteralBoolExpression).Bool())
 }
 
+// Test with the LessThan operator
+func TestLogicalExpressionLessThan(t *testing.T) {
+	largeExpr := stdlib.JustOp[Expression](NewLiteralIntConstExpression("", 10))
+	smallExpr := stdlib.JustOp[Expression](NewLiteralIntConstExpression("", 5))
+
+	// Test case 1 (Small < Large)
+	res := NewLogicalExpression(Literal, LogicalLT, smallExpr, largeExpr)
+	_, argValues := PrepareInitialValues(res, nil)
+	require.True(t, res.Evaluate(argValues).Value().(*LiteralBoolExpression).Bool())
+
+	// Test case 1 (Large < Small)
+	res = NewLogicalExpression(Literal, LogicalLT, largeExpr, smallExpr)
+	_, argValues = PrepareInitialValues(res, nil)
+	require.False(t, res.Evaluate(argValues).Value().(*LiteralBoolExpression).Bool())
+
+	// Test case 3 (Large < Large)
+	res = NewLogicalExpression(Literal, LogicalLT, largeExpr, largeExpr)
+	_, argValues = PrepareInitialValues(res, nil)
+	require.False(t, res.Evaluate(argValues).Value().(*LiteralBoolExpression).Bool())
+}
+
+// Test with the LessThanEqual operator
+func TestLogicalExpressionLessThanEqual(t *testing.T) {
+	largeExpr := stdlib.JustOp[Expression](NewLiteralIntConstExpression("", 10))
+	smallExpr := stdlib.JustOp[Expression](NewLiteralIntConstExpression("", 9))
+	largeFloatExpr := stdlib.JustOp[Expression](NewLiteralFloatConstExpression("", 10.0))
+
+	// Test case 1 (Small <= Large)
+	res := NewLogicalExpression(Literal, LogicalLEQ, smallExpr, largeExpr)
+	_, argValues := PrepareInitialValues(res, nil)
+	require.True(t, res.Evaluate(argValues).Value().(*LiteralBoolExpression).Bool())
+
+	// Test case 1 (Large <= Small)
+	res = NewLogicalExpression(Literal, LogicalLEQ, largeExpr, smallExpr)
+	_, argValues = PrepareInitialValues(res, nil)
+	require.False(t, res.Evaluate(argValues).Value().(*LiteralBoolExpression).Bool())
+
+	// Test case 3 (Large <= Large)
+	res = NewLogicalExpression(Literal, LogicalLEQ, largeExpr, largeExpr)
+	_, argValues = PrepareInitialValues(res, nil)
+	require.True(t, res.Evaluate(argValues).Value().(*LiteralBoolExpression).Bool())
+
+	// Mixed Numeric Types
+
+	// Test case 4 (Small <= LargeFloat)
+	res = NewLogicalExpression(Literal, LogicalLEQ, smallExpr, largeFloatExpr)
+	_, argValues = PrepareInitialValues(res, nil)
+	require.True(t, res.Evaluate(argValues).Value().(*LiteralBoolExpression).Bool())
+
+	// Test case 5 (LargeFloat <= Small)
+	res = NewLogicalExpression(Literal, LogicalLEQ, largeFloatExpr, smallExpr)
+	_, argValues = PrepareInitialValues(res, nil)
+	require.False(t, res.Evaluate(argValues).Value().(*LiteralBoolExpression).Bool())
+}
+
 // Test with boolean expressions with depth of 2
-func TestBoolExpressionDepth2(t *testing.T) {
+func TestLogicalExpressionDepth2(t *testing.T) {
 	trueExpr := stdlib.JustOp[Expression](NewLiteralBoolConstExpression("", true))
 	falseExpr := stdlib.JustOp[Expression](NewLiteralBoolConstExpression("", false))
 
@@ -146,7 +201,7 @@ func regCallback(name string) {
 }
 
 // Test with boolean expressions with depth of 2
-func TestBoolNonConstExpression(t *testing.T) {
+func TestLogicalNonConstExpression(t *testing.T) {
 	trueExpr := stdlib.JustOp[Expression](NewLiteralBoolConstExpression("", true))
 	falseExpr := stdlib.JustOp[Expression](NewLiteralBoolExpression("varFalse"))
 
@@ -154,8 +209,13 @@ func TestBoolNonConstExpression(t *testing.T) {
 
 	// Test case 1 (true and false)
 	res := NewLogicalExpression(Literal, LogicalAnd, trueExpr, falseExpr)
-	_, argValues := PrepareInitialValues(res, nil)
+	state, argValues := PrepareInitialValues(res, regCallback)
 	require.Equal(t, len(varNames), 1)
 	require.Equal(t, varNames[0], "varFalse")
+	require.False(t, res.Evaluate(argValues).Value().(*LiteralBoolExpression).Bool())
+
+	// Now change the false expression value to true
+	state.SetValue("varFalse", true)
+	argValues = state.ToArgs()
 	require.True(t, res.Evaluate(argValues).Value().(*LiteralBoolExpression).Bool())
 }

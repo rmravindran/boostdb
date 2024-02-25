@@ -43,9 +43,9 @@ type Expression interface {
 	// Is the expression a constant
 	IsConstant() bool
 
-	// Prepare an expression and return a clean state. The nameHandler will
-	// be used by the expression to let the user know that the expression state
-	// requires a named argument.
+	// Prepare an expression and return a clean state. The nameHandler, if not
+	// nil will be used by the expression to let the user know that the
+	// expression state requires a named argument.
 	Prepare(nameHandler ArgNameHandler) ExpressionState
 }
 

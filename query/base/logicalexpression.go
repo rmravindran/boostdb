@@ -140,10 +140,6 @@ func (be *LogicalExpression) Evaluate(args interface{}) *stdlib.MaybeOp[Expressi
 		}
 	}
 
-	if leftValue.DataType != rightValue.DataType {
-		return stdlib.ErrorOp[Expression](errors.New("incompatible types"))
-	}
-
 	switch be.opType {
 	case LogicalAnd:
 		return stdlib.JustOp[Expression](NewLiteralBoolConstExpression("", leftValue.BoolValue && rightValue.BoolValue))
@@ -248,6 +244,86 @@ func (be *LogicalExpression) evaluateIfLiteralExpression(expr *stdlib.MaybeOp[Ex
 	return true
 }
 
+// Convert the right literal to integer
+func (be *LogicalExpression) convertToInt(right *_LiteralValue) int64 {
+	switch right.DataType {
+	case ValueTypeBool:
+		if right.BoolValue {
+			return 1
+		} else {
+			return 0
+		}
+	case ValueTypeInt:
+		return right.IntValue
+	case ValueTypeFloat:
+		return int64(right.FloatValue)
+	case ValueTypeString:
+		// TODO
+		return 0
+	}
+	return 0
+}
+
+// Convert the right literal to float
+func (be *LogicalExpression) convertToFloat(right *_LiteralValue) float64 {
+	switch right.DataType {
+	case ValueTypeBool:
+		if right.BoolValue {
+			return 1.0
+		} else {
+			return 0.0
+		}
+	case ValueTypeInt:
+		return float64(right.IntValue)
+	case ValueTypeFloat:
+		return right.FloatValue
+	case ValueTypeString:
+		// TODO
+		return 0
+	}
+	return 0
+}
+
+// Convert the right literal to string
+func (be *LogicalExpression) convertToString(right *_LiteralValue) string {
+	switch right.DataType {
+	case ValueTypeBool:
+		if right.BoolValue {
+			return "true"
+		} else {
+			return "false"
+		}
+	case ValueTypeInt:
+		// TODO
+		return "0"
+	case ValueTypeFloat:
+		// TODO
+		return "0.0"
+	case ValueTypeString:
+		return right.StrValue
+	}
+	return ""
+}
+
+// Convert the right literal to boolean
+func (be *LogicalExpression) convertToBool(right *_LiteralValue) bool {
+	switch right.DataType {
+	case ValueTypeBool:
+		return right.BoolValue
+	case ValueTypeInt:
+		return right.IntValue != 0
+	case ValueTypeFloat:
+		return right.FloatValue != 0.0
+	case ValueTypeString:
+		if right.StrValue == "true" {
+			return true
+		} else {
+			return false
+		}
+	}
+	return false
+}
+
 // Evaluate the operation on the two literals based on their optype and return
 // the boolean result
 func (be *LogicalExpression) evaluateOperation(left *_LiteralValue, right *_LiteralValue) bool {
@@ -255,62 +331,62 @@ func (be *LogicalExpression) evaluateOperation(left *_LiteralValue, right *_Lite
 	case ValueTypeInt:
 		switch be.opType {
 		case LogicalGEQ:
-			return left.IntValue >= right.IntValue
+			return left.IntValue >= be.convertToInt(right)
 		case LogicalLEQ:
-			return left.IntValue <= right.IntValue
+			return left.IntValue <= be.convertToInt(right)
 		case LogicalEQ:
-			return left.IntValue == right.IntValue
+			return left.IntValue == be.convertToInt(right)
 		case LogicalNEQ:
-			return left.IntValue != right.IntValue
+			return left.IntValue != be.convertToInt(right)
 		case LogicalLT:
-			return left.IntValue < right.IntValue
+			return left.IntValue < be.convertToInt(right)
 		case LogicalGT:
-			return left.IntValue > right.IntValue
+			return left.IntValue > be.convertToInt(right)
 		}
 	case ValueTypeFloat:
 		switch be.opType {
 		case LogicalGEQ:
-			return left.FloatValue >= right.FloatValue
+			return left.FloatValue >= be.convertToFloat(right)
 		case LogicalLEQ:
-			return left.FloatValue <= right.FloatValue
+			return left.FloatValue <= be.convertToFloat(right)
 		case LogicalEQ:
-			return left.FloatValue == right.FloatValue
+			return left.FloatValue == be.convertToFloat(right)
 		case LogicalNEQ:
-			return left.FloatValue != right.FloatValue
+			return left.FloatValue != be.convertToFloat(right)
 		case LogicalLT:
-			return left.FloatValue < right.FloatValue
+			return left.FloatValue < be.convertToFloat(right)
 		case LogicalGT:
-			return left.FloatValue > right.FloatValue
+			return left.FloatValue > be.convertToFloat(right)
 		}
 	case ValueTypeString:
 		switch be.opType {
 		case LogicalGEQ:
-			return left.StrValue >= right.StrValue
+			return left.StrValue >= be.convertToString(right)
 		case LogicalLEQ:
-			return left.StrValue <= right.StrValue
+			return left.StrValue <= be.convertToString(right)
 		case LogicalEQ:
-			return left.StrValue == right.StrValue
+			return left.StrValue == be.convertToString(right)
 		case LogicalNEQ:
-			return left.StrValue != right.StrValue
+			return left.StrValue != be.convertToString(right)
 		case LogicalLT:
-			return left.StrValue < right.StrValue
+			return left.StrValue < be.convertToString(right)
 		case LogicalGT:
-			return left.StrValue > right.StrValue
+			return left.StrValue > be.convertToString(right)
 		}
 	case ValueTypeBool:
 		switch be.opType {
 		case LogicalGEQ:
-			return left.BoolValue == right.BoolValue
+			return left.BoolValue == be.convertToBool(right)
 		case LogicalLEQ:
-			return left.BoolValue == right.BoolValue
+			return left.BoolValue == be.convertToBool(right)
 		case LogicalEQ:
-			return left.BoolValue == right.BoolValue
+			return left.BoolValue == be.convertToBool(right)
 		case LogicalNEQ:
-			return left.BoolValue != right.BoolValue
+			return left.BoolValue != be.convertToBool(right)
 		case LogicalLT:
-			return left.BoolValue == right.BoolValue
+			return left.BoolValue == be.convertToBool(right)
 		case LogicalGT:
-			return left.BoolValue == right.BoolValue
+			return left.BoolValue == be.convertToBool(right)
 		}
 	}
 

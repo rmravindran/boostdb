@@ -1,0 +1,14 @@
+strict digraph {
+
+
+	"j.s" [  weight=0 ];
+
+	"j.s" -> "a" [  weight=0 ];
+
+	"j.s" -> "b" [  weight=0 ];
+
+	"a" [  weight=0 ];
+
+	"b" [  weight=0 ];
+
+}

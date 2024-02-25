@@ -37,10 +37,10 @@ const (
 	WhereOpUnknown WhereOperatorType = iota
 
 	// Greater than or equal
-	WhereGEQ
+	WhereOpGEQ
 
 	// Less than or equal
-	WhereLEQ
+	WhereOpLEQ
 
 	// Equal
 	WhereOpEQ
@@ -59,10 +59,10 @@ const (
 	// represent both due to the wide difference in optimization steps
 
 	// Conjunction operator
-	WhereAND
+	WhereOpAND
 
 	// Disjunction operator
-	WhereOR
+	WhereOpOR
 )
 
 // Expression Type
@@ -87,20 +87,21 @@ type ConstantValue struct {
 }
 
 type WhereExpression struct {
-	Left      *WhereExpression
-	Right     *WhereExpression
-	Operator  WhereOperatorType
-	FieldName string
-	Source    string
-	Type      ExpressionType
-	ValueData ConstantValue
+	Left              *WhereExpression
+	Right             *WhereExpression
+	Operator          WhereOperatorType
+	Attribute         string
+	Series            string
+	SeriesFamilyAlias string
+	Type              ExpressionType
+	ValueData         ConstantValue
 }
 
 type WhereExpressionVisitor struct {
 	CurrentParseState WhereParseState
 
-	// Is state invalid
-	IsInvalid bool
+	// Is state valid
+	IsValid bool
 
 	// Error message
 	Error error
@@ -119,7 +120,7 @@ type WhereExpressionVisitor struct {
 func NewWhereExpressionVisitor() *WhereExpressionVisitor {
 	return &WhereExpressionVisitor{
 		CurrentParseState: ParsingWhereNone,
-		IsInvalid:         false,
+		IsValid:           true,
 		Error:             nil,
 		ParsingText:       "",
 		currentExpression: nil,
@@ -143,9 +144,9 @@ func (v *WhereExpressionVisitor) Enter(in ast.Node) (ast.Node, bool) {
 		// Only these operations are supported
 		switch n.Op {
 		case opcode.GE:
-			v.currentExpression.Operator = WhereGEQ
+			v.currentExpression.Operator = WhereOpGEQ
 		case opcode.LE:
-			v.currentExpression.Operator = WhereLEQ
+			v.currentExpression.Operator = WhereOpLEQ
 		case opcode.EQ:
 			v.currentExpression.Operator = WhereOpEQ
 		case opcode.NE:
@@ -155,18 +156,18 @@ func (v *WhereExpressionVisitor) Enter(in ast.Node) (ast.Node, bool) {
 		case opcode.GT:
 			v.currentExpression.Operator = WhereOpGT
 		case opcode.LogicAnd:
-			v.currentExpression.Operator = WhereAND
+			v.currentExpression.Operator = WhereOpAND
 		case opcode.LogicOr:
-			v.currentExpression.Operator = WhereOR
+			v.currentExpression.Operator = WhereOpOR
 		default:
-			v.IsInvalid = true
+			v.IsValid = false
 			if v.Error == nil {
 				v.Error = errors.New("unknown logical operator type at '" + v.ParsingText + "'")
 				skipChildren = true
 			}
 		}
 
-		if v.IsInvalid {
+		if !v.IsValid {
 			break
 		}
 
@@ -186,7 +187,7 @@ func (v *WhereExpressionVisitor) Enter(in ast.Node) (ast.Node, bool) {
 
 			// Upon unwiding, we should be back in the binary expression state
 			if v.CurrentParseState != ParsingWhereBinaryExp {
-				v.IsInvalid = true
+				v.IsValid = false
 				if v.Error == nil {
 					v.Error = errors.New("invalid syntax '" + v.ParsingText + "'")
 					skipChildren = true
@@ -202,7 +203,7 @@ func (v *WhereExpressionVisitor) Enter(in ast.Node) (ast.Node, bool) {
 
 			// Upon unwiding, we should be back in the binary expression state
 			if v.CurrentParseState != ParsingWhereBinaryExp {
-				v.IsInvalid = true
+				v.IsValid = false
 				if v.Error == nil {
 					v.Error = errors.New("invalid syntax '" + v.ParsingText + "'")
 					skipChildren = true
@@ -216,26 +217,26 @@ func (v *WhereExpressionVisitor) Enter(in ast.Node) (ast.Node, bool) {
 		v.currentExpression.Type = ExpTypeValueExpression
 		switch n.Datum.Kind() {
 		case test_driver.KindInt64:
-			v.currentExpression.ValueData.DataType = ValueTypeInt
+			v.currentExpression.ValueData.DataType = base.ValueTypeInt
 			v.currentExpression.ValueData.IntValue = n.Datum.GetInt64()
 		case test_driver.KindUint64:
-			v.currentExpression.ValueData.DataType = ValueTypeInt
+			v.currentExpression.ValueData.DataType = base.ValueTypeInt
 			v.currentExpression.ValueData.IntValue = int64(n.Datum.GetUint64())
 		case test_driver.KindFloat32:
-			v.currentExpression.ValueData.DataType = ValueTypeFloat
+			v.currentExpression.ValueData.DataType = base.ValueTypeFloat
 			v.currentExpression.ValueData.FloatValue = float64(n.Datum.GetFloat32())
 		case test_driver.KindFloat64:
-			v.currentExpression.ValueData.DataType = ValueTypeFloat
+			v.currentExpression.ValueData.DataType = base.ValueTypeFloat
 			v.currentExpression.ValueData.FloatValue = n.Datum.GetFloat64()
 		case test_driver.KindString:
-			v.currentExpression.ValueData.DataType = ValueTypeString
+			v.currentExpression.ValueData.DataType = base.ValueTypeString
 			v.currentExpression.ValueData.StringValue = n.Datum.GetString()
 		}
 		skipChildren = true
 	case *ast.ColumnNameExpr:
 		if v.CurrentParseState != ParsingWhereBinaryExp {
 			// Error
-			v.IsInvalid = true
+			v.IsValid = false
 			if v.Error == nil {
 				v.Error = errors.New("invalid syntax '" + v.ParsingText + "'")
 				skipChildren = true
@@ -246,7 +247,7 @@ func (v *WhereExpressionVisitor) Enter(in ast.Node) (ast.Node, bool) {
 	case *ast.ColumnName:
 		if v.CurrentParseState != ParsingWhereColNameExprNode {
 			// Error
-			v.IsInvalid = true
+			v.IsValid = false
 			if v.Error == nil {
 				v.Error = errors.New("invalid syntax '" + v.ParsingText + "'")
 				skipChildren = true
@@ -254,8 +255,21 @@ func (v *WhereExpressionVisitor) Enter(in ast.Node) (ast.Node, bool) {
 		}
 		v.currentExpression.Type = ExpTypeColumnNameExpression
 		v.CurrentParseState = ParsingWhereColNameNode
-		v.currentExpression.FieldName = n.Name.O
-		v.currentExpression.Source = n.Table.O
+		attributeName := n.Name.O
+		seriesName := n.Table.O
+		seriesFamilyAlias := n.Schema.O
+		if n.Table.O == "" {
+			attributeName = "value"
+			seriesName = n.Name.O
+		} else if n.Schema.O == "" {
+			attributeName = "value"
+			seriesName = n.Name.O
+			seriesFamilyAlias = n.Table.O
+		}
+
+		v.currentExpression.Attribute = attributeName
+		v.currentExpression.Series = seriesName
+		v.currentExpression.SeriesFamilyAlias = seriesFamilyAlias
 		skipChildren = true
 	}
 
@@ -267,7 +281,7 @@ func (v *WhereExpressionVisitor) Leave(in ast.Node) (ast.Node, bool) {
 	case *ast.BinaryOperationExpr:
 		if v.CurrentParseState != ParsingWhereBinaryExp {
 			// Error
-			v.IsInvalid = true
+			v.IsValid = false
 			if v.Error == nil {
 				v.Error = errors.New("invalid syntax '" + v.ParsingText + "'")
 			}
@@ -278,7 +292,7 @@ func (v *WhereExpressionVisitor) Leave(in ast.Node) (ast.Node, bool) {
 	case *ast.ColumnName:
 		if v.CurrentParseState != ParsingWhereColNameNode {
 			// Error
-			v.IsInvalid = true
+			v.IsValid = false
 			if v.Error == nil {
 				v.Error = errors.New("invalid syntax '" + v.ParsingText + "'")
 			}
@@ -287,7 +301,7 @@ func (v *WhereExpressionVisitor) Leave(in ast.Node) (ast.Node, bool) {
 	case *ast.ColumnNameExpr:
 		if v.CurrentParseState != ParsingWhereColNameExprNode {
 			// Error
-			v.IsInvalid = true
+			v.IsValid = false
 			if v.Error == nil {
 				v.Error = errors.New("invalid syntax '" + v.ParsingText + "'")
 			}
@@ -296,7 +310,7 @@ func (v *WhereExpressionVisitor) Leave(in ast.Node) (ast.Node, bool) {
 	case *test_driver.ValueExpr:
 		if v.CurrentParseState != ParsingWhereBinaryExp {
 			// Error
-			v.IsInvalid = true
+			v.IsValid = false
 			if v.Error == nil {
 				v.Error = errors.New("invalid syntax '" + v.ParsingText + "'")
 			}
