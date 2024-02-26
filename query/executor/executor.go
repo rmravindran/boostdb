@@ -1,12 +1,22 @@
 package executor
 
 import (
+	"strings"
+	"time"
+
 	m3client "github.com/m3db/m3/src/dbnode/client"
 	"github.com/m3db/m3/src/x/ident"
+	xtime "github.com/m3db/m3/src/x/time"
 	"github.com/rmravindran/boostdb/client"
 	"github.com/rmravindran/boostdb/query/base"
 	"github.com/rmravindran/boostdb/stdlib"
 )
+
+type SelectFieldInfo struct {
+	seriesName    string
+	seriesId      ident.ID
+	attributeName string
+}
 
 type Executor struct {
 
@@ -20,10 +30,13 @@ type Executor struct {
 	seriesFamilies map[string]*client.M3DBSeriesFamily
 
 	// Iterators for the fetched series
-	seriesIterators map[string]client.BoostSeriesIterator
+	seriesIterators map[string]*client.BoostSeriesIterator
 
 	// WhereOp ColumnName dependencies
 	whereOpColumnNames []string
+
+	// Result set fields
+	resultSetFields []SelectFieldInfo
 }
 
 func NewExecutor(namespace string, session m3client.Session, maxSymTables int) *Executor {
@@ -35,7 +48,7 @@ func NewExecutor(namespace string, session m3client.Session, maxSymTables int) *
 		namespace:          namespace,
 		session:            boostSession,
 		seriesFamilies:     make(map[string]*client.M3DBSeriesFamily),
-		seriesIterators:    make(map[string]client.BoostSeriesIterator),
+		seriesIterators:    make(map[string]*client.BoostSeriesIterator),
 		whereOpColumnNames: make([]string, 0)}
 }
 
@@ -59,6 +72,9 @@ func (e *Executor) ExecutePlan(queryPlan *QueryPlan) error {
 			e.ExecutePlanNode(planNode)
 		}
 	}
+
+	// TODO Make the ExecutePlan take start/end time and a way to return
+	// the result in an async manner
 
 	return nil
 }
@@ -105,12 +121,40 @@ func (e *Executor) ExecuteSelectSeriesOp(
 
 	// Ensure that the expression is a ColumnNameExpression
 
+	// Split the name by the '.' and get the parts
+	parts := strings.Split(name, ".")
+	lenParts := len(parts)
+	seriesName, attributeName := parts[lenParts-2], parts[lenParts-1]
+	source := strings.Join(parts[:lenParts-2], ".")
+
+	seriesId := ident.StringID(seriesName)
+	e.resultSetFields = append(
+		e.resultSetFields,
+		SelectFieldInfo{
+			seriesName:    seriesName,
+			seriesId:      seriesId,
+			attributeName: attributeName})
+
 	// Find the series family from the expression
+	seriesFamily, ok := e.seriesFamilies[source]
+	if !ok {
+		// TODO error
+		return
+	}
 
 	// Extract the series name, generate the seriesID and use the series family
 	// to fetch the series.
+	start := xtime.Now()
+	end := xtime.Now()
+	seriesIter, err := seriesFamily.Fetch(
+		seriesId,
+		start.Add(-time.Millisecond*5), // Adjust by 5 milliseconds
+		end)
 
 	// Store the seriesIterator in the seriesIterators map
+	if err != nil {
+		e.seriesIterators[name] = seriesIter
+	}
 }
 
 // Execute the where operation

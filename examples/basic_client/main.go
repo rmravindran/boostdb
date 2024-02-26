@@ -200,6 +200,10 @@ func readSF(sf *client.M3DBSeriesFamily,
 	end xtime.UnixNano) {
 	defer timer("read-large-series-with-attributes")()
 	log.Printf("------ read large data (with attributes) to db ------")
+
+	// TODO
+	// Use query to read the data back
+
 	expVal := 1.0
 	// Now lets read the series back out
 	seriesIter, err := sf.Fetch(
