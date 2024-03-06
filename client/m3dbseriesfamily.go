@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	dbencoding "github.com/m3db/m3/src/dbnode/encoding"
 	"github.com/m3db/m3/src/x/ident"
 	xtime "github.com/m3db/m3/src/x/time"
 	core "github.com/rmravindran/boostdb/core"
@@ -189,14 +190,29 @@ func (sf *M3DBSeriesFamily) Fetch(
 	startInclusive xtime.UnixNano,
 	endExclusive xtime.UnixNano,
 ) (*BoostSeriesIterator, error) {
-	seriesIt, err := sf.session.Fetch(
-		sf.namespace, id, startInclusive, endExclusive)
-	if err != nil {
-		return nil, err
+
+	// There is an iterator for every shard in the distribution
+	iterators := make([]dbencoding.SeriesIterator, 0, sf.distributionFactor)
+	var dId uint16
+	for dId = 0; dId < sf.distributionFactor; dId++ {
+		// Qualified Series Name
+		seriesName := core.GetQualifiedSeriesName(
+			sf.domainName,
+			sf.name,
+			dId,
+			id)
+		qualifiedId := ident.StringID(seriesName)
+
+		seriesIt, err := sf.session.Fetch(
+			sf.namespace, qualifiedId, startInclusive, endExclusive)
+		if err != nil {
+			return nil, err
+		}
+		iterators = append(iterators, seriesIt)
 	}
 
 	return NewBoostSeriesIterator(
-		seriesIt,
+		iterators,
 		sf.symbolTableStreamNameResolver,
 		sf.session.fetchOrCreateSymTable,
 		startInclusive,

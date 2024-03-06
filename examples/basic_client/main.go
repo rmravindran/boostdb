@@ -32,6 +32,8 @@ import (
 	"github.com/m3db/m3/src/x/ident"
 	xtime "github.com/m3db/m3/src/x/time"
 	"github.com/rmravindran/boostdb/client"
+	"github.com/rmravindran/boostdb/query/executor"
+	"github.com/rmravindran/boostdb/query/parser"
 
 	yaml "gopkg.in/yaml.v2"
 )
@@ -129,7 +131,7 @@ func writeAndReadLargeTableData(session m3client.Session, count int) {
 		namespaceID,
 		1,
 		boostSession,
-		64,
+		getDistributionFactor(namespace, "myAppDomain", "myAppSF"),
 		100000000,
 		maxConcurrentWrites)
 
@@ -150,8 +152,77 @@ func writeAndReadLargeTableData(session m3client.Session, count int) {
 	start, end := writeSF(sf, seriesID, tagsIter, count)
 	time.Sleep(5000 * time.Millisecond)
 
+	readUsingSQL(boostSession, "myAppSF", "cpu_user_util_myservice1", start, end)
+
 	// Now read back and check the values are in order.
-	readSF(sf, seriesID, start, end)
+	//readSF(sf, seriesID, start, end)
+}
+
+// Return the distribution factor for the series
+func getDistributionFactor(namespace string, domain string, seriesFamily string) uint16 {
+	return 2
+}
+
+func readUsingSQL(
+	boostSession *client.BoostSession,
+	seriesFamily string,
+	seriesName string,
+	startTime xtime.UnixNano,
+	endTime xtime.UnixNano) {
+
+	sqlQuery := fmt.Sprintf("SELECT %s FROM myAppDomain.%s", seriesName, seriesFamily)
+
+	parser := parser.NewParser()
+	queryOps, err := parser.Parse(sqlQuery)
+	if err != nil {
+		log.Fatalf("unable to parse query: %v", err)
+		return
+	}
+
+	planner := executor.NewPlanner()
+	plan := planner.GeneratePlan(queryOps)
+	if plan == nil {
+		log.Fatalf("unable to generate query execution plan")
+		return
+	}
+
+	// Create a new executor
+	// TODO: Change executor to take in the boostsession as input
+	executor := executor.NewExecutor(
+		namespace,
+		"myAppDomain",
+		getDistributionFactor,
+		plan,
+		boostSession,
+		startTime,
+		endTime,
+		time.Duration(time.Millisecond*500),
+		10000)
+
+	expVal := 1.0
+	for {
+		err, hasResult := executor.Execute()
+		if err != nil {
+			log.Fatalf("error executing the read query")
+		}
+
+		// Nothing more to do
+		if !hasResult {
+			break
+		}
+
+		result, err := executor.ResultSet()
+		if err != nil {
+			log.Fatalf("error executing the read query")
+		}
+		for _, row := range result {
+			col0Value := row[0].(float64)
+			if col0Value != expVal {
+				log.Fatalf("unexpected value: found %v but expected %v", col0Value, expVal)
+			}
+			expVal++
+		}
+	}
 }
 
 func writeSF(sf *client.M3DBSeriesFamily,
@@ -200,9 +271,6 @@ func readSF(sf *client.M3DBSeriesFamily,
 	end xtime.UnixNano) {
 	defer timer("read-large-series-with-attributes")()
 	log.Printf("------ read large data (with attributes) to db ------")
-
-	// TODO
-	// Use query to read the data back
 
 	expVal := 1.0
 	// Now lets read the series back out

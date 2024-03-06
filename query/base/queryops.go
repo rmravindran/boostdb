@@ -1,6 +1,8 @@
 package base
 
-import "github.com/rmravindran/boostdb/stdlib"
+import (
+	"github.com/rmravindran/boostdb/stdlib"
+)
 
 // QueryOps represents a collection of operations that could be performed to
 // generate a result set. PLanner will use the queryOps to generate an
@@ -13,6 +15,9 @@ type QueryOps struct {
 
 	// List of all select field operations
 	selectFieldOps []SelectFieldOp
+
+	// Where expression
+	rootExpression *stdlib.MaybeOp[Expression]
 }
 
 type SourceFetchOp struct {
@@ -30,7 +35,9 @@ type SelectFieldOp struct {
 
 // Create a new QueryOps
 func NewQueryOps() *QueryOps {
-	return &QueryOps{}
+	return &QueryOps{
+		rootExpression: nil,
+	}
 }
 
 // Add fetch operations to the set of query operations
@@ -79,4 +86,9 @@ func (qo *QueryOps) SourceFetchOps() []SourceFetchOp {
 // Return the select field operations
 func (qo *QueryOps) SelectFieldOps() []SelectFieldOp {
 	return qo.selectFieldOps
+}
+
+// Return the where expression
+func (qo *QueryOps) WhereExpression() *stdlib.MaybeOp[Expression] {
+	return qo.rootExpression
 }

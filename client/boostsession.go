@@ -11,6 +11,7 @@ import (
 	lru "github.com/hashicorp/golang-lru/v2"
 	"github.com/m3db/m3/src/dbnode/client"
 	"github.com/m3db/m3/src/dbnode/encoding"
+	dbencoding "github.com/m3db/m3/src/dbnode/encoding"
 	"github.com/m3db/m3/src/dbnode/storage/index"
 	"github.com/m3db/m3/src/x/ident"
 	"github.com/rmravindran/boostdb/core"
@@ -182,8 +183,11 @@ func (bs *BoostSession) FetchValueWithTaggedAttribute(
 		return nil, err
 	}
 
+	iterators := make([]dbencoding.SeriesIterator, 0, 1)
+	iterators = append(iterators, seriesIt)
+
 	return NewBoostSeriesIterator(
-		seriesIt,
+		iterators,
 		symTableNameResolver,
 		bs.fetchOrCreateSymTable,
 		startInclusive,

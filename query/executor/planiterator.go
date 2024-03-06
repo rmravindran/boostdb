@@ -32,10 +32,13 @@ func (pi *PlanIterator) Next() (bool, error) {
 	}
 
 	if pi.currentDepth == -1 {
-		pi.currentDepth = 0
+		pi.currentDepth = 1
+	} else {
+		pi.currentDepth++
 	}
+
 	pi.itPlanNodes = pi.queryPlan.NodesAtDepth(pi.currentDepth)
-	if pi.itPlanNodes == nil {
+	if len(pi.itPlanNodes) == 0 || pi.itPlanNodes == nil {
 		pi.done = true
 		return false, nil
 	}

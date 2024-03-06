@@ -119,6 +119,7 @@ func (p *Planner) GeneratePlan(queryOps *base.QueryOps) *QueryPlan {
 
 	// Add select field operations to the graph. The field operations are
 	// dependent on the source fetch operations
+	selectFieldNames := make([]string, 0)
 	for _, selectFieldOp := range queryOps.SelectFieldOps() {
 		name := selectFieldOp.SeriesName + "." + selectFieldOp.AttributeName
 		source := selectFieldOp.SourceAlias
@@ -135,6 +136,7 @@ func (p *Planner) GeneratePlan(queryOps *base.QueryOps) *QueryPlan {
 		} else {
 
 			qp.qGraph.AddVertex(NewSelectPlanNode(name, source, name))
+			selectFieldNames = append(selectFieldNames, name)
 
 			// Create an edge from the fetch node to the select node
 			err := qp.qGraph.AddEdge(alias, name)
@@ -147,6 +149,28 @@ func (p *Planner) GeneratePlan(queryOps *base.QueryOps) *QueryPlan {
 
 	// Now add the WHERE expression to the graph. While adding the expression
 	// we need to add the edges from the fetch nodes to indicate the dependency
+	rootWhereExpression := queryOps.WhereExpression()
+	if rootWhereExpression == nil {
+		// Add a trivial boolean literal expression. This is necessary since
+		// the result accumulation happens in the where expression executor
+		for _, name := range selectFieldNames {
+			nodeName := name + ".NOPFilterExpression()"
+			qp.qGraph.AddVertex(&ExecutablePlanNode{
+				name:         nodeName,
+				planNodeType: PlanNodeTypeWhere,
+				fetchOp:      nil,
+				expression: stdlib.JustOp[base.Expression](
+					base.NewLiteralBoolConstExpression(nodeName, true)),
+			})
+
+			// Create an edge from the fetch node to the select node
+			err := qp.qGraph.AddEdge(name, nodeName)
+			if err != nil {
+				// TODO return error
+				return nil
+			}
+		}
+	}
 
 	return qp
 }
@@ -250,6 +274,27 @@ func (qp *QueryPlan) AdjacentNodes(nodes []*ExecutablePlanNode) ([]*ExecutablePl
 				if err == nil {
 					ret = append(ret, planNode)
 				}
+			}
+		}
+	}
+
+	return ret, nil
+}
+
+// Return the nodes that are parents of the specified node
+func (qp *QueryPlan) Parents(node *ExecutablePlanNode) ([]*ExecutablePlanNode, error) {
+	ret := make([]*ExecutablePlanNode, 0)
+
+	predMap, err := qp.qGraph.PredecessorMap()
+	if err != nil {
+		return ret, fmt.Errorf("could not get adjacency map: %w", err)
+	}
+
+	if _, ok := predMap[node.name]; ok {
+		for pred := range predMap[node.name] {
+			planNode, err := qp.qGraph.Vertex(pred)
+			if err == nil {
+				ret = append(ret, planNode)
 			}
 		}
 	}
