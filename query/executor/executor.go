@@ -89,6 +89,17 @@ type Executor struct {
 
 	// Number of executions
 	executionCount int
+
+	// Number of batch calls
+	batchCount int
+
+	// Pending completion from last execution
+	pendingCompletionNodes []*ExecutionPendingNode
+}
+
+type ExecutionPendingNode struct {
+	planNode *ExecutablePlanNode
+	parents  []*ExecutablePlanNode
 }
 
 func NewExecutor(
@@ -120,7 +131,9 @@ func NewExecutor(
 		planIt:                         nil,
 		resultSet:                      nil,
 		resultSize:                     0,
-		executionCount:                 0}
+		executionCount:                 0,
+		batchCount:                     0,
+		pendingCompletionNodes:         make([]*ExecutionPendingNode, 0)}
 }
 
 // Execute the query plan associated with the executor. Returns an error and a
@@ -131,12 +144,54 @@ func NewExecutor(
 // results are available in the ResultSet. The columns information is available
 // in the Fields.
 func (e *Executor) Execute() (error, bool) {
+
+	// TODO:
+	// - Make the ResultSet type preallocate a matrix of fized row/col
+	//     - Try to make use of some sparsed representation
+	//     - The addressible row/col is limited to the execution's actual
+	//       results. Error if accessed out of bounds.
+	// - Allocate from an arena
+
 	if e.executionError != nil {
 		return e.executionError, false
 	}
 
 	if e.isDone {
 		return nil, false
+	}
+
+	e.resultSet = make([][]any, 0, e.batchSize)
+	e.resultSize = 0
+
+	// Before creating another execution plan, iterate through the pending
+	// nodes and complete them
+	if len(e.pendingCompletionNodes) > 0 {
+		pendingCompletionNodes := e.pendingCompletionNodes
+		e.pendingCompletionNodes = make([]*ExecutionPendingNode, 0)
+		for _, nodeInfo := range pendingCompletionNodes {
+			pendingCompletion, err := e.executePlanNode(
+				nodeInfo.planNode, nodeInfo.parents)
+			if err != nil {
+				// TODO release resources
+				return err, false
+			}
+
+			if pendingCompletion {
+				e.pendingCompletionNodes = append(
+					e.pendingCompletionNodes, nodeInfo)
+			}
+		}
+
+		// We return with whatever we got from the pending node
+		// procesing
+		e.batchCount++
+		thresholdTime := e.endTime.Add(-time.Nanosecond)
+		if e.windowEndTime.After(thresholdTime) &&
+			len(e.pendingCompletionNodes) == 0 {
+			e.isDone = true
+		}
+
+		return nil, e.resultSize > 0
 	}
 
 	// Set the execution start and end times accodging to the window size
@@ -154,11 +209,6 @@ func (e *Executor) Execute() (error, bool) {
 		}
 	}
 
-	//if len(e.resultSet) == 0 {
-	e.resultSet = make([][]any, 0, e.batchSize)
-	//}
-	e.resultSize = 0
-
 	e.resultSetFields = make([]SelectFieldInfo, 0, len(e.resultSetFields))
 
 	err := e.executePlan()
@@ -167,9 +217,11 @@ func (e *Executor) Execute() (error, bool) {
 	}
 
 	thresholdTime := e.endTime.Add(-time.Nanosecond)
-	if e.windowEndTime.After(thresholdTime) {
+	if e.windowEndTime.After(thresholdTime) &&
+		len(e.pendingCompletionNodes) == 0 {
 		e.isDone = true
 	}
+	e.batchCount++
 	e.executionCount++
 
 	return err, e.resultSize > 0
@@ -220,10 +272,16 @@ func (e *Executor) executePlan() error {
 		for _, planNode := range planNodes {
 			parents, err := e.queryPlan.Parents(planNode)
 			if err == nil {
-				err = e.executePlanNode(planNode, parents)
+				pendingCompletion, err := e.executePlanNode(planNode, parents)
 				if err != nil {
 					// TODO release resources
 					return err
+				}
+
+				if pendingCompletion {
+					e.pendingCompletionNodes = append(
+						e.pendingCompletionNodes,
+						&ExecutionPendingNode{planNode, parents})
 				}
 			}
 		}
@@ -235,7 +293,7 @@ func (e *Executor) executePlan() error {
 // Execute a plan node
 func (e *Executor) executePlanNode(
 	planNode *ExecutablePlanNode,
-	parents []*ExecutablePlanNode) error {
+	parents []*ExecutablePlanNode) (bool, error) {
 
 	switch planNode.planNodeType {
 	case PlanNodeTypeFetch:
@@ -246,18 +304,18 @@ func (e *Executor) executePlanNode(
 		return e.executeWhereOp(planNode.name, planNode.expression, parents)
 	}
 
-	return errors.New("unsupported query plan node")
+	return false, errors.New("unsupported query plan node")
 }
 
 // Execute the source fetch operation. For m3db, this amounts to just simply
 // creating the series family instances.
 func (e *Executor) executeSourceFetchOp(
-	name string, fetchOp *SourceFetchOp, parents []*ExecutablePlanNode) error {
+	name string, fetchOp *SourceFetchOp, parents []*ExecutablePlanNode) (bool, error) {
 
 	// If series family already exists, then return
 	_, ok := e.seriesFamilies[name]
 	if ok {
-		return nil
+		return false, nil
 	}
 
 	// get the distribution factor
@@ -277,14 +335,14 @@ func (e *Executor) executeSourceFetchOp(
 	// Save it
 	e.seriesFamilies[name] = seriesFamily
 
-	return nil
+	return false, nil
 }
 
 // Execute the select series operation
 func (e *Executor) executeSelectSeriesOp(
 	name string,
 	expression *stdlib.MaybeOp[base.Expression],
-	parents []*ExecutablePlanNode) error {
+	parents []*ExecutablePlanNode) (bool, error) {
 
 	// Ensure that the expression is a ColumnNameExpression
 
@@ -296,10 +354,10 @@ func (e *Executor) executeSelectSeriesOp(
 	// If there are multiple parents, then it is an error since the select op
 	// only depends on a parent plan node of type PlanNodeFetchType
 	if parents == nil {
-		return errors.New("select series operation must have one parent")
+		return false, errors.New("select series operation must have one parent")
 	}
 	if len(parents) != 1 {
-		return errors.New("select series operation can only have one parent")
+		return false, errors.New("select series operation can only have one parent")
 	}
 
 	source := parents[0].name
@@ -309,7 +367,7 @@ func (e *Executor) executeSelectSeriesOp(
 	seriesFamily, ok := e.seriesFamilies[source]
 	if !ok {
 		// TODO error
-		return errors.New("series family referenced by the series not found")
+		return false, errors.New("series family referenced by the series not found")
 	}
 
 	// Extract the series name, generate the seriesID and use the series family
@@ -329,14 +387,14 @@ func (e *Executor) executeSelectSeriesOp(
 
 	e.planNodeNameToSelectFieldIndex[name] = len(e.resultSetFields) - 1
 
-	return err
+	return false, err
 }
 
 // Execute the where operation
 func (e *Executor) executeWhereOp(
 	name string,
 	expression *stdlib.MaybeOp[base.Expression],
-	parents []*ExecutablePlanNode) error {
+	parents []*ExecutablePlanNode) (bool, error) {
 
 	// Now that all series have been fetched, the where operation needs to be
 	// executed by creating an expression state and evaluating the expression.
@@ -349,16 +407,19 @@ func (e *Executor) executeWhereOp(
 	case *base.LiteralBoolExpression:
 		return e.executeNOPFilterExpression(name, parents)
 	}
-	return nil
+
+	return false, nil
 }
 
 // Execute the NOP where expression by selecting all the series in the parents
 func (e *Executor) executeNOPFilterExpression(
 	name string,
-	parents []*ExecutablePlanNode) error {
+	parents []*ExecutablePlanNode) (bool, error) {
 
 	// Iterate through all the series iterators and select all the values
 	// upto the batch size.
+
+	outOfSpace := false
 
 	// Iterate through the resultSetFields and for each seriesIterator, select
 	// the value and add it to the result set at the repective index.
@@ -397,6 +458,11 @@ func (e *Executor) executeNOPFilterExpression(
 					// TODO handle attributes
 				}
 				row++
+
+				if row == e.batchSize {
+					outOfSpace = true
+					break
+				}
 			} else {
 				fieldsCompleted[colIndx] = true
 			}
@@ -404,14 +470,14 @@ func (e *Executor) executeNOPFilterExpression(
 		e.resultSize = max(row, e.resultSize)
 	}
 
-	return nil
+	return outOfSpace, nil
 }
 
 // Execute the where operation
 func (e *Executor) executeLogicalExpression(
 	name string,
 	expression *stdlib.MaybeOp[base.Expression],
-	parents []*ExecutablePlanNode) error {
+	parents []*ExecutablePlanNode) (bool, error) {
 
 	// Prepare the expression state. Record all the column name expressions in
 	// the whereOpColumnNames list.
@@ -420,5 +486,5 @@ func (e *Executor) executeLogicalExpression(
 	// values for all the column names in the whereOpColumnNames in the state
 	// and then evaluate the expression
 
-	return nil
+	return false, nil
 }

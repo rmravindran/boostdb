@@ -111,7 +111,7 @@ func main() {
 	defer pprof.StopCPUProfile()
 
 	// Write and read large table data
-	writeAndReadLargeTableData(session, 10000)
+	writeAndReadLargeTableData(session, 100000)
 }
 
 func writeAndReadLargeTableData(session m3client.Session, count int) {
@@ -160,7 +160,7 @@ func writeAndReadLargeTableData(session m3client.Session, count int) {
 
 // Return the distribution factor for the series
 func getDistributionFactor(namespace string, domain string, seriesFamily string) uint16 {
-	return 2
+	return 8
 }
 
 func readUsingSQL(
@@ -169,6 +169,9 @@ func readUsingSQL(
 	seriesName string,
 	startTime xtime.UnixNano,
 	endTime xtime.UnixNano) {
+
+	defer timer("read-large-series-with-attributes-using-sql")()
+	log.Printf("------ read large data (with attributes) using sql from db ------")
 
 	sqlQuery := fmt.Sprintf("SELECT %s FROM myAppDomain.%s", seriesName, seriesFamily)
 
@@ -197,7 +200,7 @@ func readUsingSQL(
 		startTime,
 		endTime,
 		time.Duration(time.Millisecond*500),
-		10000)
+		100000)
 
 	expVal := 1.0
 	for {
@@ -232,10 +235,12 @@ func writeSF(sf *client.M3DBSeriesFamily,
 	defer timer("write-large-series-m3db-table")()
 	start := xtime.Now()
 	writtenValue := 1.0
+	numUniqHost := 10000
 
 	// Same series, but with 1000000 attributes
 	for i := 0; i < count; i++ {
-		hostName := fmt.Sprintf("host-%07d", i)
+		hostNum := i % numUniqHost
+		hostName := fmt.Sprintf("host-%07d", hostNum)
 		attributes := []ident.Tag{
 			{Name: ident.StringID("host"), Value: ident.StringID(hostName)},
 		}
@@ -270,7 +275,7 @@ func readSF(sf *client.M3DBSeriesFamily,
 	start xtime.UnixNano,
 	end xtime.UnixNano) {
 	defer timer("read-large-series-with-attributes")()
-	log.Printf("------ read large data (with attributes) to db ------")
+	log.Printf("------ read large data (with attributes) from db ------")
 
 	expVal := 1.0
 	// Now lets read the series back out
