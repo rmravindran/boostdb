@@ -32,7 +32,7 @@ func (cne *ColumnNameExpression) SqlOp() SqlOpType {
 // expression containing the same value as this one. Evaluation by any argument
 // other than nil on a const expression, results in error
 func (cne *ColumnNameExpression) Evaluate(args interface{}) *stdlib.MaybeOp[Expression] {
-	if args != nil {
+	if args == nil {
 		return stdlib.ErrorOp[Expression](errors.New("cannot evaluate column name expression without values"))
 	}
 	switch v := args.(type) {
@@ -55,7 +55,7 @@ func (cne *ColumnNameExpression) Evaluate(args interface{}) *stdlib.MaybeOp[Expr
 
 // Return the final values produced by the operator, otherwise returns nil
 func (cne *ColumnNameExpression) Value() any {
-	return nil
+	return cne
 }
 
 // Return false to indicate that column name expressions are not constant

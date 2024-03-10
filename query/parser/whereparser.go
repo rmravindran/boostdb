@@ -2,6 +2,7 @@ package parser
 
 import (
 	"errors"
+	"strconv"
 
 	"github.com/pingcap/tidb/pkg/parser/ast"
 	"github.com/pingcap/tidb/pkg/parser/opcode"
@@ -231,6 +232,18 @@ func (v *WhereExpressionVisitor) Enter(in ast.Node) (ast.Node, bool) {
 		case test_driver.KindString:
 			v.currentExpression.ValueData.DataType = base.ValueTypeString
 			v.currentExpression.ValueData.StringValue = n.Datum.GetString()
+		case test_driver.KindMysqlDecimal:
+			v.currentExpression.ValueData.DataType = base.ValueTypeFloat
+			strDecimal := string(n.Datum.GetMysqlDecimal().ToString())
+			float64Value, err := strconv.ParseFloat(strDecimal, 64)
+			if err != nil {
+				v.IsValid = false
+				if v.Error == nil {
+					v.Error = errors.New("invalid syntax '" + v.ParsingText + "'")
+				}
+			} else {
+				v.currentExpression.ValueData.FloatValue = float64Value
+			}
 		}
 		skipChildren = true
 	case *ast.ColumnNameExpr:

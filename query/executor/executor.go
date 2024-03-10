@@ -76,7 +76,7 @@ type Executor struct {
 	planIt *PlanIterator
 
 	// Results of execution
-	resultSet [][]any
+	resultSet *base.ResultSet
 
 	// Result size
 	resultSize int
@@ -146,10 +146,9 @@ func NewExecutor(
 func (e *Executor) Execute() (error, bool) {
 
 	// TODO:
-	// - Make the ResultSet type preallocate a matrix of fized row/col
-	//     - Try to make use of some sparsed representation
-	//     - The addressible row/col is limited to the execution's actual
-	//       results. Error if accessed out of bounds.
+	// - Select attribute name
+	// - Where logical expression
+	// - Make the ResultSet use a sparsed representation
 	// - Allocate from an arena
 
 	if e.executionError != nil {
@@ -160,7 +159,11 @@ func (e *Executor) Execute() (error, bool) {
 		return nil, false
 	}
 
-	e.resultSet = make([][]any, 0, e.batchSize)
+	if e.resultSet == nil {
+		e.resultSet = base.NewResultSet(e.batchSize)
+	} else {
+		e.resultSet.Clear()
+	}
 	e.resultSize = 0
 
 	// Before creating another execution plan, iterate through the pending
@@ -229,12 +232,12 @@ func (e *Executor) Execute() (error, bool) {
 
 // Return the result set from the most recent Execute call. Note that the
 // result set is valid only until the next call to Execute.
-func (e *Executor) ResultSet() ([][]any, error) {
+func (e *Executor) ResultSet() (*base.ResultSet, error) {
 	if e.executionError != nil {
 		return nil, e.executionError
 	}
 
-	return e.resultSet[:e.resultSize], nil
+	return e.resultSet, nil
 }
 
 // Return the fields associated with the result set. The fields are the columns
@@ -301,7 +304,12 @@ func (e *Executor) executePlanNode(
 	case PlanNodeTypeSelectSeries:
 		return e.executeSelectSeriesOp(planNode.name, planNode.expression, parents)
 	case PlanNodeTypeWhere:
-		return e.executeWhereOp(planNode.name, planNode.expression, parents)
+		return e.executeWhereOp(
+			planNode.name,
+			planNode.expression,
+			planNode.ExpressionState(),
+			planNode.ExpressionArgs().([]any),
+			parents)
 	}
 
 	return false, errors.New("unsupported query plan node")
@@ -394,6 +402,8 @@ func (e *Executor) executeSelectSeriesOp(
 func (e *Executor) executeWhereOp(
 	name string,
 	expression *stdlib.MaybeOp[base.Expression],
+	expressionState base.ExpressionState,
+	expressionArgs []any,
 	parents []*ExecutablePlanNode) (bool, error) {
 
 	// Now that all series have been fetched, the where operation needs to be
@@ -403,7 +413,7 @@ func (e *Executor) executeWhereOp(
 	// LiteralConstBoolExpression
 	switch expression.Value().(type) {
 	case *base.LogicalExpression:
-		return e.executeLogicalExpression(name, expression, parents)
+		return e.executeLogicalExpression(name, expression, expressionState, expressionArgs, parents)
 	case *base.LiteralBoolExpression:
 		return e.executeNOPFilterExpression(name, parents)
 	}
@@ -424,6 +434,7 @@ func (e *Executor) executeNOPFilterExpression(
 	// Iterate through the resultSetFields and for each seriesIterator, select
 	// the value and add it to the result set at the repective index.
 	colSize := len(e.resultSetFields)
+	e.resultSet.ReDim(colSize)
 	// Map of completed fields
 	fieldsCompleted := make(map[int]bool)
 
@@ -446,14 +457,8 @@ func (e *Executor) executeNOPFilterExpression(
 			if seriesField.seriesIterator.Next() {
 				dp, _, _ := seriesField.seriesIterator.Current()
 				if seriesField.attributeName == "value" {
-					if row >= len(e.resultSet) {
-						e.resultSet = append(e.resultSet, make([]any, 0, e.batchSize))
-					}
-					if (e.resultSet[row] == nil) || (len(e.resultSet[row]) < colSize) {
-						e.resultSet[row] = make([]any, colSize)
-					}
-					// Set the value
-					e.resultSet[row][colIndx] = dp.Value
+					e.resultSet.Resize(row + 1)
+					e.resultSet.Set(row, colIndx, dp.Value)
 				} else {
 					// TODO handle attributes
 				}
@@ -477,14 +482,92 @@ func (e *Executor) executeNOPFilterExpression(
 func (e *Executor) executeLogicalExpression(
 	name string,
 	expression *stdlib.MaybeOp[base.Expression],
+	expressionState base.ExpressionState,
+	expressionArgs []any,
 	parents []*ExecutablePlanNode) (bool, error) {
 
-	// Prepare the expression state. Record all the column name expressions in
-	// the whereOpColumnNames list.
+	// Iterate through all the series iterators and select all the values
+	// upto the batch size.
+
+	outOfSpace := false
+
+	// Iterate through the resultSetFields and for each seriesIterator, select
+	// the value and add it to the result set at the repective index.
+	colSize := len(e.resultSetFields)
+	e.resultSet.ReDim(colSize)
+	// Map of completed fields
+	fieldsCompleted := make(map[int]bool)
+
+	// Find the select field info that is applicable to each of the parent
+	// plan nodes
+	whereFieldIndices := make([]int, 0)
+	for _, parent := range parents {
+		whereFieldIndices = append(
+			whereFieldIndices, e.planNodeNameToSelectFieldIndex[parent.name])
+	}
 
 	// Iterate through all the series iterators. Then sent the columns name
 	// values for all the column names in the whereOpColumnNames in the state
 	// and then evaluate the expression
 
-	return false, nil
+	row := 0
+
+	tmpValues := make([]any, len(e.resultSetFields))
+	for {
+
+		// TODO: We should evaluate the expression first and  only if the
+		// expression is true, then extract the values and attributes since
+		// attribute extraction might be unnecessary for many points.
+
+		// First read all the columns's value into the array.
+		for colIndx, seriesField := range e.resultSetFields {
+			if fieldsCompleted[colIndx] {
+				continue
+			}
+			if seriesField.seriesIterator.Next() {
+				dp, _, _ := seriesField.seriesIterator.Current()
+				if seriesField.attributeName == "value" {
+					tmpValues[colIndx] = dp.Value
+				} else {
+					// TODO handle attributes
+				}
+			} else {
+				fieldsCompleted[colIndx] = true
+			}
+		}
+
+		for _, colIndx := range whereFieldIndices {
+			seriesField := &e.resultSetFields[colIndx]
+			if seriesField.attributeName == "value" {
+				argName := seriesField.seriesName + ".value"
+				expressionState.SetValue(argName, tmpValues[colIndx])
+			} else {
+				// TODO handle attributes
+			}
+		}
+
+		// Evaluate the expression
+		expressionArgs := expressionState.ToArgs()
+		result := expression.Evaluate(expressionArgs)
+		if result.Error() != nil {
+			return false, result.Error()
+		} else if result.Value().(*base.LiteralBoolExpression).Bool() {
+			e.resultSet.Resize(row + 1)
+
+			for colIndx := range e.resultSetFields {
+				e.resultSet.Set(row, colIndx, tmpValues[colIndx])
+			}
+			e.resultSize = max(row, e.resultSize)
+			row++
+		}
+		if row == e.batchSize {
+			outOfSpace = true
+			break
+		} else if len(fieldsCompleted) == len(e.resultSetFields) {
+			// All iterators are done
+			break
+		}
+	}
+
+	return outOfSpace, nil
 }

@@ -1,14 +1,22 @@
 strict digraph {
 
 
+	"a.value" [  weight=0 ];
+
+	"a.value" -> "a.value.NOPFilterExpression()" [  weight=0 ];
+
+	"b.value" [  weight=0 ];
+
+	"b.value" -> "b.value.NOPFilterExpression()" [  weight=0 ];
+
+	"a.value.NOPFilterExpression()" [  weight=0 ];
+
+	"b.value.NOPFilterExpression()" [  weight=0 ];
+
 	"j.s" [  weight=0 ];
 
-	"j.s" -> "a" [  weight=0 ];
+	"j.s" -> "a.value" [  weight=0 ];
 
-	"j.s" -> "b" [  weight=0 ];
-
-	"a" [  weight=0 ];
-
-	"b" [  weight=0 ];
+	"j.s" -> "b.value" [  weight=0 ];
 
 }

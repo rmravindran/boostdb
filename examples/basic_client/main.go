@@ -111,7 +111,7 @@ func main() {
 	defer pprof.StopCPUProfile()
 
 	// Write and read large table data
-	writeAndReadLargeTableData(session, 100000)
+	writeAndReadLargeTableData(session, 10000)
 }
 
 func writeAndReadLargeTableData(session m3client.Session, count int) {
@@ -173,7 +173,7 @@ func readUsingSQL(
 	defer timer("read-large-series-with-attributes-using-sql")()
 	log.Printf("------ read large data (with attributes) using sql from db ------")
 
-	sqlQuery := fmt.Sprintf("SELECT %s FROM myAppDomain.%s", seriesName, seriesFamily)
+	sqlQuery := fmt.Sprintf("SELECT %s FROM myAppDomain.%s WHERE %s < 100.0", seriesName, seriesFamily, seriesName)
 
 	parser := parser.NewParser()
 	queryOps, err := parser.Parse(sqlQuery)
@@ -200,7 +200,7 @@ func readUsingSQL(
 		startTime,
 		endTime,
 		time.Duration(time.Millisecond*500),
-		100000)
+		10000)
 
 	expVal := 1.0
 	for {
@@ -218,8 +218,8 @@ func readUsingSQL(
 		if err != nil {
 			log.Fatalf("error executing the read query")
 		}
-		for _, row := range result {
-			col0Value := row[0].(float64)
+		for row := 0; row < result.NumRows(); row++ {
+			col0Value, _ := result.GetFloat(row, 0)
 			if col0Value != expVal {
 				log.Fatalf("unexpected value: found %v but expected %v", col0Value, expVal)
 			}

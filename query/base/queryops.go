@@ -76,6 +76,7 @@ func (qo *QueryOps) AddSelectFieldOp(
 // Adds the WHERE expression. This is the root of the where expression.
 func (qo *QueryOps) AddWhereExpression(
 	rootExpression *stdlib.MaybeOp[Expression]) {
+	qo.rootExpression = rootExpression
 }
 
 // Return the source fetch operations

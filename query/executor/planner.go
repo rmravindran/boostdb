@@ -34,10 +34,12 @@ const (
 )
 
 type ExecutablePlanNode struct {
-	name         string
-	planNodeType PlanNodeType
-	fetchOp      *SourceFetchOp
-	expression   *stdlib.MaybeOp[base.Expression]
+	name            string
+	planNodeType    PlanNodeType
+	fetchOp         *SourceFetchOp
+	expression      *stdlib.MaybeOp[base.Expression]
+	expressionState base.ExpressionState
+	expressionArgs  interface{}
 }
 
 func hashFunc(e *ExecutablePlanNode) string {
@@ -169,6 +171,50 @@ func (p *Planner) GeneratePlan(queryOps *base.QueryOps) *QueryPlan {
 				// TODO return error
 				return nil
 			}
+		}
+	} else {
+		rootWhereExpressionNode := &ExecutablePlanNode{
+			name:         "WHERE_ROOT",
+			planNodeType: PlanNodeTypeWhere,
+			fetchOp:      nil,
+			expression:   rootWhereExpression}
+
+		qp.qGraph.AddVertex(rootWhereExpressionNode)
+
+		// Add edges from the select nodes to the where node
+		prepareHasError := false
+		expressionState, expressionArgs :=
+			base.PrepareInitialValues(rootWhereExpression,
+				func(name string) {
+					// Find the select node with the name. If the name starts
+					// with a "." then check to see if we have a vertex with
+					// just "[seriesName].value" tag. If not then check to see
+					// we have "[seriesFamily].[seriesName].value" with the
+					// seriesFamily is the default source identified above
+					if name[0] == '.' {
+						name = name[1:]
+					}
+
+					_, err := qp.qGraph.Vertex(name)
+					if err == graph.ErrVertexNotFound {
+						name = firstSource + "." + name
+						_, err = qp.qGraph.Vertex(name)
+						if err != nil {
+							prepareHasError = true
+							return
+						}
+					}
+
+					err = qp.qGraph.AddEdge(name, "WHERE_ROOT")
+					if err != nil {
+						// TODO return error
+					}
+				})
+		rootWhereExpressionNode.expressionState = expressionState
+		rootWhereExpressionNode.expressionArgs = expressionArgs
+		if prepareHasError {
+			// TODO return error
+			return nil
 		}
 	}
 
@@ -305,4 +351,14 @@ func (qp *QueryPlan) Parents(node *ExecutablePlanNode) ([]*ExecutablePlanNode, e
 // Return an iterator for the query plan
 func (qp *QueryPlan) Iterator() *PlanIterator {
 	return NewPlanIterator(qp)
+}
+
+// Return the where expression state
+func (planNode *ExecutablePlanNode) ExpressionState() base.ExpressionState {
+	return planNode.expressionState
+}
+
+// Return the where expression args
+func (planNode *ExecutablePlanNode) ExpressionArgs() interface{} {
+	return planNode.expressionArgs
 }

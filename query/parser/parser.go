@@ -233,7 +233,10 @@ func (v *Visitor) convertWhereExpressionToLogicalExpression(
 		// Recurse
 		leftExpr = v.convertWhereExpressionToLogicalExpression(whereExpr.Left)
 	} else if whereExpr.Left.Type == ExpTypeColumnNameExpression {
-		colName := whereExpr.Left.SeriesFamilyAlias + "." + whereExpr.Left.Series + "." + whereExpr.Left.Attribute
+		colName := whereExpr.Left.Series + "." + whereExpr.Left.Attribute
+		if whereExpr.Left.SeriesFamilyAlias != "" {
+			colName = whereExpr.Left.SeriesFamilyAlias + "." + colName
+		}
 		leftExpr = stdlib.JustOp[base.Expression](base.NewColumnNameExpression(colName, base.Where))
 	}
 

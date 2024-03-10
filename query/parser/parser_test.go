@@ -35,6 +35,19 @@ func TestParser_SimpleSelect(t *testing.T) {
 }
 
 // Unit test the parser
+func TestParser_SimpleWhere(t *testing.T) {
+	p := NewParser()
+	queryOps, err := p.Parse("SELECT a FROM s WHERE a < 10")
+	require.Nil(t, err)
+	require.NotNil(t, queryOps)
+
+	selectFieldOps := queryOps.SelectFieldOps()
+	require.Equal(t, 1, len(selectFieldOps))
+
+	whereExp := queryOps.WhereExpression()
+	require.NotNil(t, whereExp)
+}
+
 func TestParser_JoinAndWhere(t *testing.T) {
 	p := NewParser()
 	queryOps, err := p.Parse("select a, t.b from s INNER JOIN t ON s.x = t.x where a < 10 and s.y = t.y")
