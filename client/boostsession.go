@@ -177,6 +177,7 @@ func (bs *BoostSession) FetchValueWithTaggedAttribute(
 	startInclusive xtime.UnixNano,
 	endExclusive xtime.UnixNano,
 	symTableNameResolver core.SymbolTableStreamNameResolver,
+	multiUseIter bool,
 ) (*BoostSeriesIterator, error) {
 	seriesIt, err := bs.session.Fetch(namespace, id, startInclusive, endExclusive)
 	if err != nil {
@@ -191,7 +192,8 @@ func (bs *BoostSession) FetchValueWithTaggedAttribute(
 		symTableNameResolver,
 		bs.fetchOrCreateSymTable,
 		startInclusive,
-		endExclusive), nil
+		endExclusive,
+		multiUseIter), nil
 }
 
 func (bs *BoostSession) fetchOrCreateSymTable(

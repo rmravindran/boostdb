@@ -23,8 +23,11 @@ type SourceFetchOp struct {
 type PlanNodeType int
 
 const (
-	// Fetch Operation
-	PlanNodeTypeFetch PlanNodeType = iota
+	// Fetch Series Family Operation
+	PlanNodeTypeFetchFamily PlanNodeType = iota
+
+	// Fetch the Series Operation
+	PlanNodeTypeFetchSeries
 
 	// Select Series Operation
 	PlanNodeTypeSelectSeries
@@ -58,13 +61,29 @@ func NewPlanner() *Planner {
 	return &Planner{}
 }
 
-func NewFetchPlanNode(
+func NewFetchFamilyPlanNode(
 	name string,
 	domain string,
 	familyName string) *ExecutablePlanNode {
 	return &ExecutablePlanNode{
 		name:         name,
-		planNodeType: PlanNodeTypeFetch,
+		planNodeType: PlanNodeTypeFetchFamily,
+		fetchOp: &SourceFetchOp{
+			namespace:    "default",
+			domain:       domain,
+			seriesFamily: familyName,
+		},
+		expression: nil,
+	}
+}
+
+func NewFetchSeriesPlanNode(
+	name string,
+	domain string,
+	familyName string) *ExecutablePlanNode {
+	return &ExecutablePlanNode{
+		name:         name,
+		planNodeType: PlanNodeTypeFetchSeries,
 		fetchOp: &SourceFetchOp{
 			namespace:    "default",
 			domain:       domain,
@@ -110,7 +129,7 @@ func (p *Planner) GeneratePlan(queryOps *base.QueryOps) *QueryPlan {
 		if firstSource == "" {
 			firstSource = sourceFetchOp.Alias
 		}
-		err := qp.qGraph.AddVertex(NewFetchPlanNode(
+		err := qp.qGraph.AddVertex(NewFetchFamilyPlanNode(
 			name, sourceFetchOp.Domain, sourceFetchOp.Source))
 		if err != nil {
 			// TODO return error
@@ -137,11 +156,47 @@ func (p *Planner) GeneratePlan(queryOps *base.QueryOps) *QueryPlan {
 			// TODO return error
 		} else {
 
+			// Name is [SeriesName].[AttributeName]
+			// This needs to a child of the Series Fetch Node. Create a Series
+			// FetchNode whth the SeriesName if doesn't exist already and make
+			// it the child of alias.
+
+			// Create a series fetch node if it doesn't exist
+			qualifiedSeriesName := source + "." + selectFieldOp.SeriesName
+			_, err := qp.qGraph.Vertex(qualifiedSeriesName)
+			if err == graph.ErrVertexNotFound {
+
+				// Series Family Node of this series
+				familyNode, err := qp.qGraph.Vertex(alias)
+				if err != nil {
+					// TODO return error
+					return nil
+				}
+
+				// Create a series fetch node
+				err = qp.qGraph.AddVertex(NewFetchSeriesPlanNode(
+					qualifiedSeriesName,
+					familyNode.fetchOp.domain,
+					familyNode.fetchOp.seriesFamily))
+				if err != nil {
+					// TODO return error
+					return nil
+				}
+
+				// Add edge from the source fetch node to the series
+				// fetch node
+				err = qp.qGraph.AddEdge(alias, qualifiedSeriesName)
+				if err != nil {
+					// TODO return error
+					return nil
+				}
+			}
+
 			qp.qGraph.AddVertex(NewSelectPlanNode(name, source, name))
 			selectFieldNames = append(selectFieldNames, name)
 
-			// Create an edge from the fetch node to the select node
-			err := qp.qGraph.AddEdge(alias, name)
+			// Create an edge from the series fetch node to the select node
+			err = qp.qGraph.AddEdge(qualifiedSeriesName, name)
 			if err != nil {
 				// TODO return error
 				return nil

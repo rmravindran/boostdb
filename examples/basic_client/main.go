@@ -44,6 +44,7 @@ const (
 
 var (
 	namespaceID = ident.StringID(namespace)
+	numUniqHost = 10000
 )
 
 type config struct {
@@ -160,7 +161,7 @@ func writeAndReadLargeTableData(session m3client.Session, count int) {
 
 // Return the distribution factor for the series
 func getDistributionFactor(namespace string, domain string, seriesFamily string) uint16 {
-	return 8
+	return 64
 }
 
 func readUsingSQL(
@@ -173,7 +174,8 @@ func readUsingSQL(
 	defer timer("read-large-series-with-attributes-using-sql")()
 	log.Printf("------ read large data (with attributes) using sql from db ------")
 
-	sqlQuery := fmt.Sprintf("SELECT %s FROM myAppDomain.%s WHERE %s < 100.0", seriesName, seriesFamily, seriesName)
+	sqlQuery := fmt.Sprintf("SELECT %s.host, %s FROM myAppDomain.%s", seriesName, seriesName, seriesFamily)
+	//sqlQuery := fmt.Sprintf("SELECT %s.host, %s FROM myAppDomain.%s WHERE %s < 100.0", seriesName, seriesName, seriesFamily, seriesName)
 
 	parser := parser.NewParser()
 	queryOps, err := parser.Parse(sqlQuery)
@@ -203,6 +205,7 @@ func readUsingSQL(
 		10000)
 
 	expVal := 1.0
+	globalRowCounter := 0
 	for {
 		err, hasResult := executor.Execute()
 		if err != nil {
@@ -219,11 +222,20 @@ func readUsingSQL(
 			log.Fatalf("error executing the read query")
 		}
 		for row := 0; row < result.NumRows(); row++ {
-			col0Value, _ := result.GetFloat(row, 0)
-			if col0Value != expVal {
-				log.Fatalf("unexpected value: found %v but expected %v", col0Value, expVal)
+			col0Value, _ := result.GetString(row, 0)
+			col1Value, _ := result.GetFloat(row, 1)
+			if col1Value != expVal {
+				log.Fatalf("unexpected value: found %v but expected %v", col1Value, expVal)
 			}
+
+			hostNum := globalRowCounter % numUniqHost
+			hostName := fmt.Sprintf("host-%07d", hostNum)
+			if col0Value != hostName {
+				log.Fatalf("unexpected value: found %v but expected %v", col0Value, hostName)
+			}
+
 			expVal++
+			globalRowCounter++
 		}
 	}
 }
@@ -235,7 +247,6 @@ func writeSF(sf *client.M3DBSeriesFamily,
 	defer timer("write-large-series-m3db-table")()
 	start := xtime.Now()
 	writtenValue := 1.0
-	numUniqHost := 10000
 
 	// Same series, but with 1000000 attributes
 	for i := 0; i < count; i++ {
@@ -282,7 +293,8 @@ func readSF(sf *client.M3DBSeriesFamily,
 	seriesIter, err := sf.Fetch(
 		seriesID,
 		start.Add(-time.Millisecond*5), // Adjust by 5 milliseconds
-		end)
+		end,
+		true)
 	if err != nil {
 		log.Fatalf("error fetching data for untagged series: %v", err)
 	}

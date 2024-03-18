@@ -27,7 +27,7 @@ func TestPlanner_SimpleSelect(t *testing.T) {
 	// Expecting 1 fetch operation at depth == 1
 	fetchOps := plan.NodesAtDepth(1)
 	require.Equal(t, 1, len(fetchOps))
-	require.Equal(t, PlanNodeTypeFetch, fetchOps[0].planNodeType)
+	require.Equal(t, PlanNodeTypeFetchFamily, fetchOps[0].planNodeType)
 	require.NotNil(t, fetchOps[0].fetchOp)
 	require.Equal(t, "default", fetchOps[0].fetchOp.namespace)
 	require.Equal(t, "s", fetchOps[0].fetchOp.seriesFamily)
@@ -58,7 +58,7 @@ func TestPlanner_SimpleSelectWithWhere(t *testing.T) {
 	// Expecting 1 fetch operation at depth == 1
 	fetchOps := plan.NodesAtDepth(1)
 	require.Equal(t, 1, len(fetchOps))
-	require.Equal(t, PlanNodeTypeFetch, fetchOps[0].planNodeType)
+	require.Equal(t, PlanNodeTypeFetchFamily, fetchOps[0].planNodeType)
 	require.NotNil(t, fetchOps[0].fetchOp)
 	require.Equal(t, "default", fetchOps[0].fetchOp.namespace)
 	require.Equal(t, "s", fetchOps[0].fetchOp.seriesFamily)

@@ -12,6 +12,14 @@ import (
 	"github.com/rmravindran/boostdb/stdlib"
 )
 
+type SeriesIteratorInfo struct {
+	domain         string
+	seriesFamily   string
+	seriesName     string
+	seriesId       ident.ID
+	seriesIterator *client.BoostSeriesIterator
+}
+
 type SelectFieldInfo struct {
 	domain         string
 	seriesFamily   string
@@ -41,6 +49,9 @@ type Executor struct {
 
 	// Map of all series families
 	seriesFamilies map[string]*client.M3DBSeriesFamily
+
+	// Series Iterators
+	seriesIterators map[string]*SeriesIteratorInfo
 
 	// WhereOp ColumnName dependencies
 	whereOpColumnNames []string
@@ -118,6 +129,7 @@ func NewExecutor(
 		distributionFactorFn:           distributionFactorFn,
 		session:                        boostSession,
 		seriesFamilies:                 make(map[string]*client.M3DBSeriesFamily),
+		seriesIterators:                make(map[string]*SeriesIteratorInfo),
 		whereOpColumnNames:             make([]string, 0),
 		resultSetFields:                make([]SelectFieldInfo, 0),
 		planNodeNameToSelectFieldIndex: make(map[string]int),
@@ -299,16 +311,23 @@ func (e *Executor) executePlanNode(
 	parents []*ExecutablePlanNode) (bool, error) {
 
 	switch planNode.planNodeType {
-	case PlanNodeTypeFetch:
+	case PlanNodeTypeFetchFamily:
 		return e.executeSourceFetchOp(planNode.name, planNode.fetchOp, parents)
+	case PlanNodeTypeFetchSeries:
+		return e.executeSeriesFetchOp(planNode.name, planNode.expression, parents)
 	case PlanNodeTypeSelectSeries:
 		return e.executeSelectSeriesOp(planNode.name, planNode.expression, parents)
 	case PlanNodeTypeWhere:
+		args := planNode.ExpressionArgs()
+		argsArray := []any{}
+		if args != nil {
+			argsArray = args.([]any)
+		}
 		return e.executeWhereOp(
 			planNode.name,
 			planNode.expression,
 			planNode.ExpressionState(),
-			planNode.ExpressionArgs().([]any),
+			argsArray,
 			parents)
 	}
 
@@ -347,7 +366,7 @@ func (e *Executor) executeSourceFetchOp(
 }
 
 // Execute the select series operation
-func (e *Executor) executeSelectSeriesOp(
+func (e *Executor) executeSeriesFetchOp(
 	name string,
 	expression *stdlib.MaybeOp[base.Expression],
 	parents []*ExecutablePlanNode) (bool, error) {
@@ -357,7 +376,7 @@ func (e *Executor) executeSelectSeriesOp(
 	// Split the name by the '.' and get the parts
 	parts := strings.Split(name, ".")
 	lenParts := len(parts)
-	seriesName, attributeName := parts[lenParts-2], parts[lenParts-1]
+	_, seriesName := parts[lenParts-2], parts[lenParts-1]
 
 	// If there are multiple parents, then it is an error since the select op
 	// only depends on a parent plan node of type PlanNodeFetchType
@@ -383,19 +402,68 @@ func (e *Executor) executeSelectSeriesOp(
 	seriesIterator, err := seriesFamily.Fetch(
 		seriesId,
 		e.windowStartTime,
-		e.windowEndTime)
+		e.windowEndTime,
+		true)
+
+	if err != nil {
+		return false, err
+	}
+
+	e.seriesIterators[name] = &SeriesIteratorInfo{
+		domain:         parents[0].fetchOp.domain,
+		seriesFamily:   parents[0].fetchOp.seriesFamily,
+		seriesName:     seriesName,
+		seriesId:       seriesId,
+		seriesIterator: seriesIterator}
+
+	return false, nil
+}
+
+// Execute the select series operation
+func (e *Executor) executeSelectSeriesOp(
+	name string,
+	expression *stdlib.MaybeOp[base.Expression],
+	parents []*ExecutablePlanNode) (bool, error) {
+
+	// Ensure that the expression is a ColumnNameExpression
+
+	// Split the name by the '.' and get the parts
+	parts := strings.Split(name, ".")
+	lenParts := len(parts)
+	seriesName, attributeName := parts[lenParts-2], parts[lenParts-1]
+
+	// If there are multiple parents, then it is an error since the select op
+	// only depends on a parent plan node of type PlanNodeFetchType
+	if parents == nil {
+		return false, errors.New("select series operation must have one parent")
+	}
+	if len(parents) != 1 {
+		return false, errors.New("select series operation can only have one parent")
+	}
+
+	source := parents[0].name
+
+	// Get Series Iterator
+	seriesIteratorInfo, ok := e.seriesIterators[source]
+	if !ok {
+		// TODO error
+		return false, errors.New("series referenced by the select field not found")
+	}
+
+	seriesIterator := seriesIteratorInfo.seriesIterator
+
 	e.resultSetFields = append(e.resultSetFields, SelectFieldInfo{
 		domain:         parents[0].fetchOp.domain,
 		seriesFamily:   source,
 		seriesName:     seriesName,
-		seriesId:       seriesId,
+		seriesId:       seriesIteratorInfo.seriesId,
 		attributeName:  attributeName,
 		nodeName:       name,
 		seriesIterator: seriesIterator})
 
 	e.planNodeNameToSelectFieldIndex[name] = len(e.resultSetFields) - 1
 
-	return false, err
+	return false, nil
 }
 
 // Execute the where operation
@@ -446,6 +514,15 @@ func (e *Executor) executeNOPFilterExpression(
 			resultSetFieldIndices, e.planNodeNameToSelectFieldIndex[parent.name])
 	}
 
+	// If the iterator has reached the end (from another use)
+	// then restart
+	for _, colIndx := range resultSetFieldIndices {
+		seriesField := &e.resultSetFields[colIndx]
+		//if seriesField.seriesIterator.IsDone() {
+		seriesField.seriesIterator.Begin()
+		//}
+	}
+
 	for _, colIndx := range resultSetFieldIndices {
 		row := 0
 		seriesField := &e.resultSetFields[colIndx]
@@ -454,13 +531,20 @@ func (e *Executor) executeNOPFilterExpression(
 			if fieldsCompleted[colIndx] {
 				continue
 			}
+
 			if seriesField.seriesIterator.Next() {
 				dp, _, _ := seriesField.seriesIterator.Current()
+				e.resultSet.Resize(row + 1)
 				if seriesField.attributeName == "value" {
-					e.resultSet.Resize(row + 1)
 					e.resultSet.Set(row, colIndx, dp.Value)
 				} else {
-					// TODO handle attributes
+					attributes := seriesField.seriesIterator.Attributes()
+					if attributes != nil && attributes.Next() {
+						attribute := attributes.Current()
+						if attribute.Name.String() == seriesField.attributeName {
+							e.resultSet.Set(row, colIndx, attribute.Value.String())
+						}
+					}
 				}
 				row++
 
@@ -529,7 +613,13 @@ func (e *Executor) executeLogicalExpression(
 				if seriesField.attributeName == "value" {
 					tmpValues[colIndx] = dp.Value
 				} else {
-					// TODO handle attributes
+					attributes := seriesField.seriesIterator.Attributes()
+					if attributes != nil {
+						attribute := attributes.Current()
+						if attribute.Name.String() == seriesField.attributeName {
+							e.resultSet.Set(row, colIndx, attribute.Value.String())
+						}
+					}
 				}
 			} else {
 				fieldsCompleted[colIndx] = true

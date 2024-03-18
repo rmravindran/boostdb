@@ -56,6 +56,13 @@ func (rs *ResultSet) GetFloat(r int, c int) (float64, error) {
 	return rs.data[r][c].(float64), nil
 }
 
+func (rs *ResultSet) GetString(r int, c int) (string, error) {
+	if r >= rs.rows || c >= rs.cols {
+		return "", errors.New("index out of bound")
+	}
+	return rs.data[r][c].(string), nil
+}
+
 func (rs *ResultSet) Resize(rows int) {
 	if rows <= rs.maxRows {
 		rs.rows = rows

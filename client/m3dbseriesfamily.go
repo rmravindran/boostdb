@@ -189,6 +189,7 @@ func (sf *M3DBSeriesFamily) Fetch(
 	id ident.ID,
 	startInclusive xtime.UnixNano,
 	endExclusive xtime.UnixNano,
+	multiUseIter bool,
 ) (*BoostSeriesIterator, error) {
 
 	// There is an iterator for every shard in the distribution
@@ -216,7 +217,8 @@ func (sf *M3DBSeriesFamily) Fetch(
 		sf.symbolTableStreamNameResolver,
 		sf.session.fetchOrCreateSymTable,
 		startInclusive,
-		endExclusive), nil
+		endExclusive,
+		multiUseIter), nil
 }
 
 func (sf *M3DBSeriesFamily) symbolTableStreamNameResolver(

@@ -34,6 +34,7 @@ type SelectFieldInfo struct {
 	Attribute         string
 	Series            string
 	SeriesFamilyAlias string
+	FieldAlias        string
 }
 
 type SelectFieldsVisitor struct {
@@ -84,6 +85,7 @@ func (v *SelectFieldsVisitor) Enter(in ast.Node) (ast.Node, bool) {
 		} else {
 			v.CurrentParseState = ParsingSelectField
 			v.currentFieldInfo = &SelectFieldInfo{}
+			v.currentFieldInfo.FieldAlias = n.AsName.O
 		}
 	case *ast.ColumnNameExpr:
 		if v.CurrentParseState != ParsingSelectField {
@@ -110,7 +112,9 @@ func (v *SelectFieldsVisitor) Enter(in ast.Node) (ast.Node, bool) {
 				v.IsInvalid = true
 				skipChildren = true
 			} else {
-				// [Alias].[Series] is the syntactic sugar for [Alias].[Series].value
+				// [Series] is the syntactic sugar for [Series].value
+				// [Series].[Attribute] is the partial specification where the
+				//   family name will be auto-resolved during planning stage
 				// [Alias].[Series].[Attribute] is the fully qualified field name
 
 				attributeName := n.Name.O
@@ -120,9 +124,8 @@ func (v *SelectFieldsVisitor) Enter(in ast.Node) (ast.Node, bool) {
 					attributeName = "value"
 					seriesName = n.Name.O
 				} else if n.Schema.O == "" {
-					attributeName = "value"
-					seriesName = n.Name.O
-					seriesFamilyAlias = n.Table.O
+					attributeName = n.Name.O
+					seriesName = n.Table.O
 				}
 				v.currentFieldInfo.Attribute = attributeName
 				v.currentFieldInfo.Series = seriesName
