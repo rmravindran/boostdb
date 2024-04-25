@@ -153,7 +153,7 @@ func writeAndReadLargeTableData(session m3client.Session, count int) {
 	start, end := writeSF(sf, seriesID, tagsIter, count)
 	time.Sleep(5000 * time.Millisecond)
 
-	readUsingSQL(boostSession, "myAppSF", "cpu_user_util_myservice1", start, end)
+	readUsingSQL(boostSession, "myAppSF", "cpu_user_util_myservice1", start, end, count)
 
 	// Now read back and check the values are in order.
 	//readSF(sf, seriesID, start, end)
@@ -169,7 +169,8 @@ func readUsingSQL(
 	seriesFamily string,
 	seriesName string,
 	startTime xtime.UnixNano,
-	endTime xtime.UnixNano) {
+	endTime xtime.UnixNano,
+	maxValues int) {
 
 	defer timer("read-large-series-with-attributes-using-sql")()
 	log.Printf("------ read large data (with attributes) using sql from db ------")
@@ -237,6 +238,10 @@ func readUsingSQL(
 			expVal++
 			globalRowCounter++
 		}
+
+		if globalRowCounter == maxValues {
+			log.Printf("reached end")
+		}
 	}
 }
 
@@ -284,7 +289,8 @@ func writeSF(sf *client.M3DBSeriesFamily,
 func readSF(sf *client.M3DBSeriesFamily,
 	seriesID ident.ID,
 	start xtime.UnixNano,
-	end xtime.UnixNano) {
+	end xtime.UnixNano,
+	maxValues int) {
 	defer timer("read-large-series-with-attributes")()
 	log.Printf("------ read large data (with attributes) from db ------")
 
@@ -301,6 +307,9 @@ func readSF(sf *client.M3DBSeriesFamily,
 	ndx := 0
 	for seriesIter.Next() {
 		dp, _, _ := seriesIter.Current()
+		if ndx == maxValues {
+			log.Printf("reached end")
+		}
 		if dp.Value != expVal {
 			log.Fatalf("unexpected value: found %v but expected %v", dp.Value, expVal)
 		}

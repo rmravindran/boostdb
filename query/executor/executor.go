@@ -123,7 +123,7 @@ func NewExecutor(
 	endTime xtime.UnixNano,
 	executionWindowSize time.Duration,
 	batchSize int) *Executor {
-	return &Executor{
+	ex := &Executor{
 		namespace:                      namespace,
 		defaultDomain:                  defaultDomain,
 		distributionFactorFn:           distributionFactorFn,
@@ -146,6 +146,8 @@ func NewExecutor(
 		executionCount:                 0,
 		batchCount:                     0,
 		pendingCompletionNodes:         make([]*ExecutionPendingNode, 0)}
+
+	return ex
 }
 
 // Execute the query plan associated with the executor. Returns an error and a
@@ -225,6 +227,10 @@ func (e *Executor) Execute() (error, bool) {
 	}
 
 	e.resultSetFields = make([]SelectFieldInfo, 0, len(e.resultSetFields))
+	for _, selectFieldName := range e.queryPlan.selectFieldNames {
+		e.resultSetFields = append(e.resultSetFields, SelectFieldInfo{})
+		e.planNodeNameToSelectFieldIndex[selectFieldName] = len(e.resultSetFields) - 1
+	}
 
 	err := e.executePlan()
 	if err != nil {
@@ -452,16 +458,21 @@ func (e *Executor) executeSelectSeriesOp(
 
 	seriesIterator := seriesIteratorInfo.seriesIterator
 
-	e.resultSetFields = append(e.resultSetFields, SelectFieldInfo{
+	index, ok := e.planNodeNameToSelectFieldIndex[name]
+	if !ok {
+		// TODO error
+		return false, errors.New("select field not found")
+	}
+	e.resultSetFields[index] = SelectFieldInfo{
 		domain:         parents[0].fetchOp.domain,
 		seriesFamily:   source,
 		seriesName:     seriesName,
 		seriesId:       seriesIteratorInfo.seriesId,
 		attributeName:  attributeName,
 		nodeName:       name,
-		seriesIterator: seriesIterator})
+		seriesIterator: seriesIterator}
 
-	e.planNodeNameToSelectFieldIndex[name] = len(e.resultSetFields) - 1
+	//e.planNodeNameToSelectFieldIndex[name] = len(e.resultSetFields) - 1
 
 	return false, nil
 }

@@ -54,6 +54,8 @@ type QueryPlan struct {
 	qGraph   graph.Graph[string, *ExecutablePlanNode]
 
 	rootNodes []string
+
+	selectFieldNames []string
 }
 
 // Create a new planner
@@ -110,9 +112,10 @@ func NewSelectPlanNode(
 // Generate a query plan
 func (p *Planner) GeneratePlan(queryOps *base.QueryOps) *QueryPlan {
 	qp := &QueryPlan{
-		queryOps:  queryOps,
-		qGraph:    graph.New(hashFunc, graph.Directed()),
-		rootNodes: make([]string, 0),
+		queryOps:         queryOps,
+		qGraph:           graph.New(hashFunc, graph.Directed()),
+		rootNodes:        make([]string, 0),
+		selectFieldNames: make([]string, 0),
 	}
 
 	// Alias/Source map
@@ -140,7 +143,7 @@ func (p *Planner) GeneratePlan(queryOps *base.QueryOps) *QueryPlan {
 
 	// Add select field operations to the graph. The field operations are
 	// dependent on the source fetch operations
-	selectFieldNames := make([]string, 0)
+	//selectFieldNames := make([]string, 0)
 	for _, selectFieldOp := range queryOps.SelectFieldOps() {
 		name := selectFieldOp.SeriesName + "." + selectFieldOp.AttributeName
 		source := selectFieldOp.SourceAlias
@@ -193,7 +196,7 @@ func (p *Planner) GeneratePlan(queryOps *base.QueryOps) *QueryPlan {
 			}
 
 			qp.qGraph.AddVertex(NewSelectPlanNode(name, source, name))
-			selectFieldNames = append(selectFieldNames, name)
+			qp.selectFieldNames = append(qp.selectFieldNames, name)
 
 			// Create an edge from the series fetch node to the select node
 			err = qp.qGraph.AddEdge(qualifiedSeriesName, name)
@@ -210,7 +213,7 @@ func (p *Planner) GeneratePlan(queryOps *base.QueryOps) *QueryPlan {
 	if rootWhereExpression == nil {
 		// Add a trivial boolean literal expression. This is necessary since
 		// the result accumulation happens in the where expression executor
-		for _, name := range selectFieldNames {
+		for _, name := range qp.selectFieldNames {
 			nodeName := name + ".NOPFilterExpression()"
 			qp.qGraph.AddVertex(&ExecutablePlanNode{
 				name:         nodeName,

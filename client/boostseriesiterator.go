@@ -99,6 +99,38 @@ func NewBoostSeriesIterator(
 	return ret
 }
 
+// Reset the iterator to the beginning of the series, if the iterator type
+// supports it.
+func (bsi *BoostSeriesIterator) Begin() error {
+
+	// If we have already reached the endy, then re-iteration is not possible
+	// unless the caching is enabled.
+	if !bsi.doCache && bsi.isDone {
+		return errors.New("iterator is a forward-only iterator")
+	}
+
+	// We are already there
+	if bsi.currentIterIndex == -1 {
+		return nil
+	}
+
+	bsi.rowNum = -1
+	bsi.currentTime = bsi.startTime
+	bsi.currentIterIndex = -1
+	bsi.preFetchCount = 0
+	bsi.isDone = false
+
+	for i := range bsi.seriesShardIter {
+		shardIter := &bsi.seriesShardIter[i]
+		shardIter.iterIndex = -1
+		shardIter.annotation = nil
+		shardIter.attributeIter = nil
+		shardIter.isDone = false
+	}
+
+	return nil
+}
+
 // Moves to the next item
 func (bsi *BoostSeriesIterator) Next() bool {
 
@@ -178,13 +210,12 @@ func (bsi *BoostSeriesIterator) Current() (
 	// Return the item with the smallest timestamp among all the shard iterators
 	// Since Next() may have been called numToSkip times, we may have to skip
 	// numToSkip next items to get to what we want.
-	var nextIndex int
 
 	// If series was already ordered once (from previous iteration),
 	// re-use that.
 	if bsi.doCache && bsi.rowNum+1 < len(bsi.orderedShardIndices) {
 		bsi.rowNum++
-		nextIndex = bsi.orderedShardIndices[bsi.rowNum]
+		nextIndex := bsi.orderedShardIndices[bsi.rowNum]
 		bsi.currentIterIndex = nextIndex
 
 		shardIter := &bsi.seriesShardIter[nextIndex]
@@ -194,6 +225,7 @@ func (bsi *BoostSeriesIterator) Current() (
 	}
 
 	// We need to order it
+	var nextIndex int
 
 	for {
 		nextIndex = -1
@@ -208,33 +240,6 @@ func (bsi *BoostSeriesIterator) Current() (
 			if !shardIter.hasRead {
 
 				bsi.fetchAndUpdateCache(shardIter)
-				/*
-
-					// If the shard has cached info, then we can use that.
-					//cacheSize := len(shardIter.dpCache)
-					if shardIter.isCacheReady {
-						shardIter.dp = shardIter.dpCache[shardIter.iterIndex].dp
-						shardIter.timeUnit = shardIter.dpCache[shardIter.iterIndex].timeUnit
-						shardIter.annotation = shardIter.dpCache[shardIter.iterIndex].annotation
-						shardIter.hasRead = true
-					} else {
-						currDp, tUnit, currAnnotation := shardIter.seriesIter.Current()
-						shardIter.dp = currDp
-						shardIter.timeUnit = tUnit
-						shardIter.annotation = currAnnotation
-						shardIter.hasRead = true
-						if bsi.doCache {
-							shardIter.dpCache = append(shardIter.dpCache,
-								CacheDpData{
-									shardIter.dp,
-									shardIter.timeUnit,
-									make(ts.Annotation, 0, len(currAnnotation)),
-								})
-							shardIter.iterIndex++
-							shardIter.dpCache[shardIter.iterIndex].annotation = shardIter.annotation
-						}
-					}
-				*/
 			}
 
 			if nextIndex == -1 {
@@ -293,37 +298,6 @@ func (bsi *BoostSeriesIterator) fetchAndUpdateCache(shardIter *SeriesShardIterat
 // Err returns any errors encountered
 func (bsi *BoostSeriesIterator) Err() error {
 	return bsi.iterError
-}
-
-// Begin
-func (bsi *BoostSeriesIterator) Begin() error {
-
-	// If we have already reached the endy, then re-iteration is not possible
-	// unless the caching is enabled.
-	if !bsi.doCache && bsi.isDone {
-		return errors.New("iterator cannot be re-used")
-	}
-
-	// We are already there
-	if bsi.currentIterIndex == -1 {
-		return nil
-	}
-
-	bsi.rowNum = -1
-	bsi.currentTime = bsi.startTime
-	bsi.currentIterIndex = -1
-	bsi.preFetchCount = 0
-	bsi.isDone = false
-
-	for i := range bsi.seriesShardIter {
-		shardIter := &bsi.seriesShardIter[i]
-		shardIter.iterIndex = -1
-		shardIter.annotation = nil
-		shardIter.attributeIter = nil
-		shardIter.isDone = false
-	}
-
-	return nil
 }
 
 // Return true if the iterator is complete
