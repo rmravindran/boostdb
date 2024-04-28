@@ -70,7 +70,10 @@ type ShardIterPosState struct {
 }
 
 type BoostSeriesIteratorPosition struct {
+	rowNum           int
 	currentIterIndex int
+	preFetchCount    int
+	numToSkip        int
 	sharIterIndices  []ShardIterPosState
 }
 
@@ -206,9 +209,12 @@ func (bsi *BoostSeriesIterator) Next() bool {
 }
 
 // Return the Series Iterator position
-func (bsi *BoostSeriesIterator) Position() BoostSeriesIteratorPosition {
-	pos := BoostSeriesIteratorPosition{
+func (bsi *BoostSeriesIterator) Position() *BoostSeriesIteratorPosition {
+	pos := &BoostSeriesIteratorPosition{
+		rowNum:           bsi.rowNum,
 		currentIterIndex: bsi.currentIterIndex,
+		preFetchCount:    bsi.preFetchCount,
+		numToSkip:        bsi.numToSkip,
 		sharIterIndices:  make([]ShardIterPosState, len(bsi.seriesShardIter)),
 	}
 
@@ -228,7 +234,7 @@ func (bsi *BoostSeriesIterator) Position() BoostSeriesIteratorPosition {
 }
 
 // Seek to the specified position
-func (bsi *BoostSeriesIterator) Seek(pos BoostSeriesIteratorPosition) error {
+func (bsi *BoostSeriesIterator) Seek(pos *BoostSeriesIteratorPosition) error {
 
 	// If we have already reached the endy, seeking is not possible
 	// unless the caching is enabled.
@@ -236,7 +242,10 @@ func (bsi *BoostSeriesIterator) Seek(pos BoostSeriesIteratorPosition) error {
 		return errors.New("iterator is a forward-only iterator")
 	}
 
+	bsi.rowNum = pos.rowNum
 	bsi.currentIterIndex = pos.currentIterIndex
+	bsi.preFetchCount = pos.preFetchCount
+	bsi.numToSkip = pos.numToSkip
 
 	for i := range bsi.seriesShardIter {
 		shardIter := &bsi.seriesShardIter[i]

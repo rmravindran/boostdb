@@ -31,7 +31,7 @@ type SelectFieldInfo struct {
 }
 
 type NOPExecState struct {
-	iteratorPos client.BoostSeriesIteratorPosition
+	iteratorPos map[int]*client.BoostSeriesIteratorPosition
 }
 
 // Callback function type that return the distribution factor for a series
@@ -523,7 +523,7 @@ func (e *Executor) executeNOPFilterExpression(
 	if prevExecutorState != nil {
 		execState = prevExecutorState.(NOPExecState)
 	} else {
-		execState = NOPExecState{iteratorPos: -1}
+		execState = NOPExecState{iteratorPos: make(map[int]*client.BoostSeriesIteratorPosition)}
 	}
 
 	// Iterate through all the series iterators and select all the values
@@ -550,10 +550,11 @@ func (e *Executor) executeNOPFilterExpression(
 	// then restart
 	for _, colIndx := range resultSetFieldIndices {
 		seriesField := &e.resultSetFields[colIndx]
-		if execState.iteratorPos == -1 {
+		iterPos, ok := execState.iteratorPos[colIndx]
+		if !ok {
 			seriesField.seriesIterator.Begin()
 		} else {
-			seriesField.seriesIterator.Seek(execState.iteratorPos)
+			seriesField.seriesIterator.Seek(iterPos)
 		}
 	}
 
@@ -567,7 +568,6 @@ func (e *Executor) executeNOPFilterExpression(
 			}
 
 			if seriesField.seriesIterator.Next() {
-				execState.iteratorPos++
 				dp, _, _ := seriesField.seriesIterator.Current()
 				e.resultSet.Resize(row + 1)
 				if seriesField.attributeName == "value" {
@@ -584,11 +584,13 @@ func (e *Executor) executeNOPFilterExpression(
 				row++
 
 				if row == e.batchSize {
+					execState.iteratorPos[colIndx] = seriesField.seriesIterator.Position()
 					outOfSpace = true
 					break
 				}
 			} else {
 				fieldsCompleted[colIndx] = true
+				delete(execState.iteratorPos, colIndx)
 			}
 		}
 		e.resultSize = max(row, e.resultSize)
