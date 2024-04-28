@@ -30,6 +30,10 @@ type SelectFieldInfo struct {
 	seriesIterator *client.BoostSeriesIterator
 }
 
+type NOPExecState struct {
+	iteratorPos client.BoostSeriesIteratorPosition
+}
+
 // Callback function type that return the distribution factor for a series
 type DistributionFactorFn func(namespace string, domain string, seriesFamily string) uint16
 
@@ -109,8 +113,9 @@ type Executor struct {
 }
 
 type ExecutionPendingNode struct {
-	planNode *ExecutablePlanNode
-	parents  []*ExecutablePlanNode
+	planNode  *ExecutablePlanNode
+	parents   []*ExecutablePlanNode
+	execState interface{}
 }
 
 func NewExecutor(
@@ -186,8 +191,9 @@ func (e *Executor) Execute() (error, bool) {
 		pendingCompletionNodes := e.pendingCompletionNodes
 		e.pendingCompletionNodes = make([]*ExecutionPendingNode, 0)
 		for _, nodeInfo := range pendingCompletionNodes {
-			pendingCompletion, err := e.executePlanNode(
-				nodeInfo.planNode, nodeInfo.parents)
+			pendingCompletion, execState, err := e.executePlanNode(
+				nodeInfo.planNode, nodeInfo.parents, nodeInfo.execState)
+			nodeInfo.execState = execState
 			if err != nil {
 				// TODO release resources
 				return err, false
@@ -293,7 +299,7 @@ func (e *Executor) executePlan() error {
 		for _, planNode := range planNodes {
 			parents, err := e.queryPlan.Parents(planNode)
 			if err == nil {
-				pendingCompletion, err := e.executePlanNode(planNode, parents)
+				pendingCompletion, execState, err := e.executePlanNode(planNode, parents, nil)
 				if err != nil {
 					// TODO release resources
 					return err
@@ -302,7 +308,7 @@ func (e *Executor) executePlan() error {
 				if pendingCompletion {
 					e.pendingCompletionNodes = append(
 						e.pendingCompletionNodes,
-						&ExecutionPendingNode{planNode, parents})
+						&ExecutionPendingNode{planNode, parents, execState})
 				}
 			}
 		}
@@ -314,15 +320,16 @@ func (e *Executor) executePlan() error {
 // Execute a plan node
 func (e *Executor) executePlanNode(
 	planNode *ExecutablePlanNode,
-	parents []*ExecutablePlanNode) (bool, error) {
+	parents []*ExecutablePlanNode,
+	prevExecutorState interface{}) (bool, interface{}, error) {
 
 	switch planNode.planNodeType {
 	case PlanNodeTypeFetchFamily:
-		return e.executeSourceFetchOp(planNode.name, planNode.fetchOp, parents)
+		return e.executeSourceFetchOp(planNode.name, planNode.fetchOp, parents, prevExecutorState)
 	case PlanNodeTypeFetchSeries:
-		return e.executeSeriesFetchOp(planNode.name, planNode.expression, parents)
+		return e.executeSeriesFetchOp(planNode.name, planNode.expression, parents, prevExecutorState)
 	case PlanNodeTypeSelectSeries:
-		return e.executeSelectSeriesOp(planNode.name, planNode.expression, parents)
+		return e.executeSelectSeriesOp(planNode.name, planNode.expression, parents, prevExecutorState)
 	case PlanNodeTypeWhere:
 		args := planNode.ExpressionArgs()
 		argsArray := []any{}
@@ -334,21 +341,24 @@ func (e *Executor) executePlanNode(
 			planNode.expression,
 			planNode.ExpressionState(),
 			argsArray,
-			parents)
+			parents,
+			prevExecutorState)
 	}
 
-	return false, errors.New("unsupported query plan node")
+	return false, nil, errors.New("unsupported query plan node")
 }
 
 // Execute the source fetch operation. For m3db, this amounts to just simply
 // creating the series family instances.
 func (e *Executor) executeSourceFetchOp(
-	name string, fetchOp *SourceFetchOp, parents []*ExecutablePlanNode) (bool, error) {
+	name string, fetchOp *SourceFetchOp,
+	parents []*ExecutablePlanNode,
+	prevExecutorState interface{}) (bool, interface{}, error) {
 
 	// If series family already exists, then return
 	_, ok := e.seriesFamilies[name]
 	if ok {
-		return false, nil
+		return false, nil, nil
 	}
 
 	// get the distribution factor
@@ -368,14 +378,15 @@ func (e *Executor) executeSourceFetchOp(
 	// Save it
 	e.seriesFamilies[name] = seriesFamily
 
-	return false, nil
+	return false, nil, nil
 }
 
 // Execute the select series operation
 func (e *Executor) executeSeriesFetchOp(
 	name string,
 	expression *stdlib.MaybeOp[base.Expression],
-	parents []*ExecutablePlanNode) (bool, error) {
+	parents []*ExecutablePlanNode,
+	prevExecutorState interface{}) (bool, interface{}, error) {
 
 	// Ensure that the expression is a ColumnNameExpression
 
@@ -387,10 +398,10 @@ func (e *Executor) executeSeriesFetchOp(
 	// If there are multiple parents, then it is an error since the select op
 	// only depends on a parent plan node of type PlanNodeFetchType
 	if parents == nil {
-		return false, errors.New("select series operation must have one parent")
+		return false, nil, errors.New("select series operation must have one parent")
 	}
 	if len(parents) != 1 {
-		return false, errors.New("select series operation can only have one parent")
+		return false, nil, errors.New("select series operation can only have one parent")
 	}
 
 	source := parents[0].name
@@ -400,7 +411,7 @@ func (e *Executor) executeSeriesFetchOp(
 	seriesFamily, ok := e.seriesFamilies[source]
 	if !ok {
 		// TODO error
-		return false, errors.New("series family referenced by the series not found")
+		return false, nil, errors.New("series family referenced by the series not found")
 	}
 
 	// Extract the series name, generate the seriesID and use the series family
@@ -412,7 +423,7 @@ func (e *Executor) executeSeriesFetchOp(
 		true)
 
 	if err != nil {
-		return false, err
+		return false, nil, err
 	}
 
 	e.seriesIterators[name] = &SeriesIteratorInfo{
@@ -422,14 +433,15 @@ func (e *Executor) executeSeriesFetchOp(
 		seriesId:       seriesId,
 		seriesIterator: seriesIterator}
 
-	return false, nil
+	return false, nil, nil
 }
 
 // Execute the select series operation
 func (e *Executor) executeSelectSeriesOp(
 	name string,
 	expression *stdlib.MaybeOp[base.Expression],
-	parents []*ExecutablePlanNode) (bool, error) {
+	parents []*ExecutablePlanNode,
+	prevExcecutorState interface{}) (bool, interface{}, error) {
 
 	// Ensure that the expression is a ColumnNameExpression
 
@@ -441,10 +453,10 @@ func (e *Executor) executeSelectSeriesOp(
 	// If there are multiple parents, then it is an error since the select op
 	// only depends on a parent plan node of type PlanNodeFetchType
 	if parents == nil {
-		return false, errors.New("select series operation must have one parent")
+		return false, nil, errors.New("select series operation must have one parent")
 	}
 	if len(parents) != 1 {
-		return false, errors.New("select series operation can only have one parent")
+		return false, nil, errors.New("select series operation can only have one parent")
 	}
 
 	source := parents[0].name
@@ -453,7 +465,7 @@ func (e *Executor) executeSelectSeriesOp(
 	seriesIteratorInfo, ok := e.seriesIterators[source]
 	if !ok {
 		// TODO error
-		return false, errors.New("series referenced by the select field not found")
+		return false, nil, errors.New("series referenced by the select field not found")
 	}
 
 	seriesIterator := seriesIteratorInfo.seriesIterator
@@ -461,7 +473,7 @@ func (e *Executor) executeSelectSeriesOp(
 	index, ok := e.planNodeNameToSelectFieldIndex[name]
 	if !ok {
 		// TODO error
-		return false, errors.New("select field not found")
+		return false, nil, errors.New("select field not found")
 	}
 	e.resultSetFields[index] = SelectFieldInfo{
 		domain:         parents[0].fetchOp.domain,
@@ -474,7 +486,7 @@ func (e *Executor) executeSelectSeriesOp(
 
 	//e.planNodeNameToSelectFieldIndex[name] = len(e.resultSetFields) - 1
 
-	return false, nil
+	return false, nil, nil
 }
 
 // Execute the where operation
@@ -483,7 +495,8 @@ func (e *Executor) executeWhereOp(
 	expression *stdlib.MaybeOp[base.Expression],
 	expressionState base.ExpressionState,
 	expressionArgs []any,
-	parents []*ExecutablePlanNode) (bool, error) {
+	parents []*ExecutablePlanNode,
+	prevExecutorState interface{}) (bool, interface{}, error) {
 
 	// Now that all series have been fetched, the where operation needs to be
 	// executed by creating an expression state and evaluating the expression.
@@ -492,18 +505,26 @@ func (e *Executor) executeWhereOp(
 	// LiteralConstBoolExpression
 	switch expression.Value().(type) {
 	case *base.LogicalExpression:
-		return e.executeLogicalExpression(name, expression, expressionState, expressionArgs, parents)
+		return e.executeLogicalExpression(name, expression, expressionState, expressionArgs, parents, prevExecutorState)
 	case *base.LiteralBoolExpression:
-		return e.executeNOPFilterExpression(name, parents)
+		return e.executeNOPFilterExpression(name, parents, prevExecutorState)
 	}
 
-	return false, nil
+	return false, nil, nil
 }
 
 // Execute the NOP where expression by selecting all the series in the parents
 func (e *Executor) executeNOPFilterExpression(
 	name string,
-	parents []*ExecutablePlanNode) (bool, error) {
+	parents []*ExecutablePlanNode,
+	prevExecutorState interface{}) (bool, interface{}, error) {
+
+	var execState NOPExecState
+	if prevExecutorState != nil {
+		execState = prevExecutorState.(NOPExecState)
+	} else {
+		execState = NOPExecState{iteratorPos: -1}
+	}
 
 	// Iterate through all the series iterators and select all the values
 	// upto the batch size.
@@ -529,9 +550,11 @@ func (e *Executor) executeNOPFilterExpression(
 	// then restart
 	for _, colIndx := range resultSetFieldIndices {
 		seriesField := &e.resultSetFields[colIndx]
-		//if seriesField.seriesIterator.IsDone() {
-		seriesField.seriesIterator.Begin()
-		//}
+		if execState.iteratorPos == -1 {
+			seriesField.seriesIterator.Begin()
+		} else {
+			seriesField.seriesIterator.Seek(execState.iteratorPos)
+		}
 	}
 
 	for _, colIndx := range resultSetFieldIndices {
@@ -544,6 +567,7 @@ func (e *Executor) executeNOPFilterExpression(
 			}
 
 			if seriesField.seriesIterator.Next() {
+				execState.iteratorPos++
 				dp, _, _ := seriesField.seriesIterator.Current()
 				e.resultSet.Resize(row + 1)
 				if seriesField.attributeName == "value" {
@@ -570,7 +594,7 @@ func (e *Executor) executeNOPFilterExpression(
 		e.resultSize = max(row, e.resultSize)
 	}
 
-	return outOfSpace, nil
+	return outOfSpace, execState, nil
 }
 
 // Execute the where operation
@@ -579,7 +603,8 @@ func (e *Executor) executeLogicalExpression(
 	expression *stdlib.MaybeOp[base.Expression],
 	expressionState base.ExpressionState,
 	expressionArgs []any,
-	parents []*ExecutablePlanNode) (bool, error) {
+	parents []*ExecutablePlanNode,
+	prevExecutorState interface{}) (bool, interface{}, error) {
 
 	// Iterate through all the series iterators and select all the values
 	// upto the batch size.
@@ -651,7 +676,7 @@ func (e *Executor) executeLogicalExpression(
 		expressionArgs := expressionState.ToArgs()
 		result := expression.Evaluate(expressionArgs)
 		if result.Error() != nil {
-			return false, result.Error()
+			return false, result.Error(), nil
 		} else if result.Value().(*base.LiteralBoolExpression).Bool() {
 			e.resultSet.Resize(row + 1)
 
@@ -670,5 +695,5 @@ func (e *Executor) executeLogicalExpression(
 		}
 	}
 
-	return outOfSpace, nil
+	return outOfSpace, nil, nil
 }

@@ -58,6 +58,22 @@ type BoostSeriesIterator struct {
 	isDone               bool
 }
 
+type ShardIterPosState struct {
+	dp          ts.Datapoint
+	timeUnit    xtime.Unit
+	annotation  ts.Annotation
+	iterIndex   int
+	hasRead     bool
+	hasConsumed bool
+	isDone      bool
+	isEOT       bool
+}
+
+type BoostSeriesIteratorPosition struct {
+	currentIterIndex int
+	sharIterIndices  []ShardIterPosState
+}
+
 // NewBoostSeriesIterator returns a new series iterator
 func NewBoostSeriesIterator(
 	seriesIterators []encoding.SeriesIterator,
@@ -110,9 +126,9 @@ func (bsi *BoostSeriesIterator) Begin() error {
 	}
 
 	// We are already there
-	if bsi.currentIterIndex == -1 {
-		return nil
-	}
+	//if bsi.currentIterIndex == -1 {
+	//	return nil
+	//}
 
 	bsi.rowNum = -1
 	bsi.currentTime = bsi.startTime
@@ -164,14 +180,9 @@ func (bsi *BoostSeriesIterator) Next() bool {
 
 		shardIter.iterIndex++
 
-		// If we have a cache, we go after it first
-		if bsi.doCache && shardIter.iterIndex < cacheSize {
-			//if shardIter.isCacheReady {
-			//shardIter.iterIndex++
-			//if cacheSize == shardIter.iterIndex {
-			//	shardIter.isDone = true
-			//}
-		} else {
+		// If we have a cache & the iterator is within the cache bounds, we don't need to
+		// dig into the underlying iterator
+		if !bsi.doCache || shardIter.iterIndex >= cacheSize {
 			// If End of Time, then we are done
 			if shardIter.isEOT {
 				shardIter.isDone = true
@@ -192,6 +203,54 @@ func (bsi *BoostSeriesIterator) Next() bool {
 	bsi.isDone = (bsi.preFetchCount == 0)
 
 	return !bsi.isDone
+}
+
+// Return the Series Iterator position
+func (bsi *BoostSeriesIterator) Position() BoostSeriesIteratorPosition {
+	pos := BoostSeriesIteratorPosition{
+		currentIterIndex: bsi.currentIterIndex,
+		sharIterIndices:  make([]ShardIterPosState, len(bsi.seriesShardIter)),
+	}
+
+	for i := range bsi.seriesShardIter {
+		shardIter := &bsi.seriesShardIter[i]
+		pos.sharIterIndices[i].iterIndex = shardIter.iterIndex
+		pos.sharIterIndices[i].hasRead = shardIter.hasRead
+		pos.sharIterIndices[i].hasConsumed = shardIter.hasConsumed
+		pos.sharIterIndices[i].isDone = shardIter.isDone
+		pos.sharIterIndices[i].isEOT = shardIter.isEOT
+		pos.sharIterIndices[i].dp = shardIter.dp
+		pos.sharIterIndices[i].timeUnit = shardIter.timeUnit
+		pos.sharIterIndices[i].annotation = shardIter.annotation
+	}
+
+	return pos
+}
+
+// Seek to the specified position
+func (bsi *BoostSeriesIterator) Seek(pos BoostSeriesIteratorPosition) error {
+
+	// If we have already reached the endy, seeking is not possible
+	// unless the caching is enabled.
+	if !bsi.doCache && bsi.isDone {
+		return errors.New("iterator is a forward-only iterator")
+	}
+
+	bsi.currentIterIndex = pos.currentIterIndex
+
+	for i := range bsi.seriesShardIter {
+		shardIter := &bsi.seriesShardIter[i]
+		shardIter.iterIndex = pos.sharIterIndices[i].iterIndex
+		shardIter.hasRead = pos.sharIterIndices[i].hasRead
+		shardIter.hasConsumed = pos.sharIterIndices[i].hasConsumed
+		shardIter.isDone = pos.sharIterIndices[i].isDone
+		shardIter.isEOT = pos.sharIterIndices[i].isEOT
+		shardIter.dp = pos.sharIterIndices[i].dp
+		shardIter.timeUnit = pos.sharIterIndices[i].timeUnit
+		shardIter.annotation = pos.sharIterIndices[i].annotation
+	}
+
+	return nil
 }
 
 // Returns the current item. Users should not hold onto the returned
@@ -347,8 +406,6 @@ func (bsi *BoostSeriesIterator) Attributes() ident.TagIterator {
 	version := binary.LittleEndian.Uint16(annotation)
 	if (bsi.symTable == nil) || (bsi.symTable.Version() != version) {
 		symTableName := bsi.symTableNameResolver(bsi.ID())
-		//symTableName := core.GetSymbolTableName(bsi.ID().String())
-		//symTableName := "m3_symboltable_" + bsi.ID().String()
 		symTable, err := bsi.symTableFetchFn(
 			bsi.Namespace(),
 			symTableName,

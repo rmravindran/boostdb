@@ -91,7 +91,6 @@ func (v *Visitor) Enter(in ast.Node) (ast.Node, bool) {
 	skipChildren := false
 	switch n := in.(type) {
 	case *ast.Join:
-		fmt.Println("Join " + n.Text())
 		if v.CurrentParseState != ParsingFrom {
 			v.Error = fmt.Errorf("Join not allowed here '" + n.Text() + "'")
 			skipChildren = true

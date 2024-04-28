@@ -112,7 +112,7 @@ func main() {
 	defer pprof.StopCPUProfile()
 
 	// Write and read large table data
-	writeAndReadLargeTableData(session, 10000)
+	writeAndReadLargeTableData(session, 15000)
 }
 
 func writeAndReadLargeTableData(session m3client.Session, count int) {
@@ -146,11 +146,11 @@ func writeAndReadLargeTableData(session m3client.Session, count int) {
 	)
 
 	// Write with fresh dictionary
-	writeSF(sf, seriesID, tagsIter, count)
+	start, end := writeSF(sf, seriesID, tagsIter, count)
 
 	// Write with reuse of the dictionary
-	log.Printf("Write with reuse of the dictionary")
-	start, end := writeSF(sf, seriesID, tagsIter, count)
+	//log.Printf("Write with reuse of the dictionary")
+	//start, end := writeSF(sf, seriesID, tagsIter, count)
 	time.Sleep(5000 * time.Millisecond)
 
 	readUsingSQL(boostSession, "myAppSF", "cpu_user_util_myservice1", start, end, count)
@@ -253,7 +253,6 @@ func writeSF(sf *client.M3DBSeriesFamily,
 	start := xtime.Now()
 	writtenValue := 1.0
 
-	// Same series, but with 1000000 attributes
 	for i := 0; i < count; i++ {
 		hostNum := i % numUniqHost
 		hostName := fmt.Sprintf("host-%07d", hostNum)
