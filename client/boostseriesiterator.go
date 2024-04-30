@@ -46,6 +46,7 @@ type BoostSeriesIterator struct {
 	symTable             *core.SymTable
 	startTime            xtime.UnixNano
 	endTime              xtime.UnixNano
+	numRead              uint64
 	seriesShardIter      []SeriesShardIterator
 	orderedShardIndices  []int
 	rowNum               int
@@ -92,6 +93,7 @@ func NewBoostSeriesIterator(
 		symTable:             nil,
 		startTime:            startTime,
 		endTime:              endTime,
+		numRead:              0,
 		seriesShardIter:      make([]SeriesShardIterator, 0, len(seriesIterators)),
 		orderedShardIndices:  make([]int, 0),
 		rowNum:               -1,
@@ -138,6 +140,7 @@ func (bsi *BoostSeriesIterator) Begin() error {
 	bsi.currentIterIndex = -1
 	bsi.preFetchCount = 0
 	bsi.isDone = false
+	bsi.numRead = 0
 
 	for i := range bsi.seriesShardIter {
 		shardIter := &bsi.seriesShardIter[i]
@@ -266,6 +269,8 @@ func (bsi *BoostSeriesIterator) Seek(pos *BoostSeriesIteratorPosition) error {
 // values as it may get invalidated when the Next is called.
 func (bsi *BoostSeriesIterator) Current() (
 	ts.Datapoint, xtime.Unit, ts.Annotation) {
+
+	bsi.numRead++
 
 	// Go through all the shard iterators and find the one with that is
 	// not done and has the time stamp closest to the current time
@@ -406,10 +411,18 @@ func (bsi *BoostSeriesIterator) Attributes() ident.TagIterator {
 	}
 
 	if bsi.seriesShardIter[bsi.currentIterIndex].attributeIter != nil {
+		println("early return")
 		return bsi.seriesShardIter[bsi.currentIterIndex].attributeIter
 	}
 
 	annotation := bsi.seriesShardIter[bsi.currentIterIndex].annotation
+
+	if bsi.numRead == 1 {
+		println("first read series     : ", bsi.seriesShardIter[bsi.currentIterIndex].seriesIter.ID().String())
+		println("first read value      : ", bsi.seriesShardIter[bsi.currentIterIndex].dp.Value)
+		println("first read anno size  : ", len(annotation))
+		println("first read anno       : ", core.ByteArrayToHex(annotation))
+	}
 
 	// First 2 bytes the version of the symtable
 	version := binary.LittleEndian.Uint16(annotation)

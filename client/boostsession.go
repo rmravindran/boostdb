@@ -28,6 +28,7 @@ type BoostSession struct {
 	maxConcurrentWrites uint32
 	pendingWrites       atomic.Int32
 	rwControl           sync.Mutex
+	numWrites           uint64
 }
 
 // NewBoostSession returns a new session that can be used to write to the database.
@@ -42,6 +43,7 @@ func NewBoostSession(
 		numAttributeUpdates: 0,
 		maxConcurrentWrites: maxConcurrentWrites,
 		rwControl:           sync.Mutex{},
+		numWrites:           0,
 	}
 	bs.pendingWrites.Store(0)
 
@@ -147,6 +149,15 @@ func (bs *BoostSession) WriteValueWithTaggedAttributes(
 	// Don't schedule if there are too many pending writes
 	bs.waitIfTooManyPendingWrites()
 
+	bs.numWrites++
+
+	if bs.numWrites == 1 {
+		println("first write series    : ", id.String())
+		println("first write tags      : ", tags)
+		println("first write value     : ", value)
+		println("first write anno size : ", len(annotation))
+		println("first write anno      : ", core.ByteArrayToHex(annotation))
+	}
 	go func(
 		namespace,
 		id ident.ID,
@@ -154,7 +165,8 @@ func (bs *BoostSession) WriteValueWithTaggedAttributes(
 		t xtime.UnixNano,
 		value float64,
 		unit xtime.Unit,
-		completionFn core.WriteCompletionFn) {
+		completionFn core.WriteCompletionFn,
+		numWrites uint64) {
 		var ret error = nil
 		if tags != nil {
 			ret = bs.session.WriteTagged(namespace, id, tags, t, value, unit, annotation)
@@ -165,7 +177,8 @@ func (bs *BoostSession) WriteValueWithTaggedAttributes(
 
 		// Call the user provided completion function
 		completionFn(ret)
-	}(namespace, id, tags.Duplicate(), t, value, unit, completionFn)
+
+	}(namespace, id, tags.Duplicate(), t, value, unit, completionFn, bs.numWrites)
 
 	return nil
 }

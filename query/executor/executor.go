@@ -102,11 +102,11 @@ type Executor struct {
 	// Current exection window end time
 	windowEndTime xtime.UnixNano
 
-	// Number of executions
-	executionCount int
-
 	// Number of batch calls
 	batchCount int
+
+	// Number of time slices during execution
+	timeSlices int
 
 	// Pending completion from last execution
 	pendingCompletionNodes []*ExecutionPendingNode
@@ -148,8 +148,8 @@ func NewExecutor(
 		planIt:                         nil,
 		resultSet:                      nil,
 		resultSize:                     0,
-		executionCount:                 0,
 		batchCount:                     0,
+		timeSlices:                     0,
 		pendingCompletionNodes:         make([]*ExecutionPendingNode, 0)}
 
 	return ex
@@ -218,7 +218,7 @@ func (e *Executor) Execute() (error, bool) {
 	}
 
 	// Set the execution start and end times accodging to the window size
-	if e.executionCount == 0 {
+	if e.timeSlices == 0 {
 		e.windowStartTime = e.startTime
 		e.windowEndTime = e.startTime.Add(e.executionWindowSize)
 		if e.windowEndTime.After(e.endTime) {
@@ -249,7 +249,7 @@ func (e *Executor) Execute() (error, bool) {
 		e.isDone = true
 	}
 	e.batchCount++
-	e.executionCount++
+	e.timeSlices++
 
 	return err, e.resultSize > 0
 }
@@ -274,6 +274,28 @@ func (e *Executor) Fields() []string {
 	}
 
 	return fieldNames
+}
+
+// Return the number of batched executions performed by this executor
+func (e *Executor) NumBatchesExecuted() int {
+	return e.batchCount
+}
+
+// Return the number of time slices performed during the execution
+func (e *Executor) NumTimeSlices() int {
+	return e.timeSlices
+}
+
+// Return the size of the batch that was provided during the construction of
+// this executor
+func (e *Executor) BatchSize() int {
+	return e.batchSize
+}
+
+// Return the most recently executed time slice. Note that returned value is
+// valid only after the first execution.
+func (e *Executor) CurrentTimeSlice() (xtime.UnixNano, xtime.UnixNano) {
+	return e.windowStartTime, e.windowEndTime
 }
 
 //-----------------

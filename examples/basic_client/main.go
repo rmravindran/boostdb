@@ -44,7 +44,7 @@ const (
 
 var (
 	namespaceID = ident.StringID(namespace)
-	numUniqHost = 10000
+	numUniqHost = 1000000
 )
 
 type config struct {
@@ -112,7 +112,7 @@ func main() {
 	defer pprof.StopCPUProfile()
 
 	// Write and read large table data
-	writeAndReadLargeTableData(session, 15000)
+	writeAndReadLargeTableData(session, 50000)
 }
 
 func writeAndReadLargeTableData(session m3client.Session, count int) {
@@ -173,7 +173,7 @@ func readUsingSQL(
 	maxValues int) {
 
 	defer timer("read-large-series-with-attributes-using-sql")()
-	log.Printf("------ read large data (with attributes) using sql from db ------")
+	log.Printf("------ read large data (with attributes) using sql from db (%v, %v) ------", startTime, endTime)
 
 	sqlQuery := fmt.Sprintf("SELECT %s.host, %s FROM myAppDomain.%s", seriesName, seriesName, seriesFamily)
 	//sqlQuery := fmt.Sprintf("SELECT %s.host, %s FROM myAppDomain.%s WHERE %s < 100.0", seriesName, seriesName, seriesFamily, seriesName)
@@ -202,7 +202,7 @@ func readUsingSQL(
 		boostSession,
 		startTime,
 		endTime,
-		time.Duration(time.Millisecond*500),
+		time.Duration(time.Millisecond*200),
 		10000)
 
 	expVal := 1.0
@@ -218,6 +218,9 @@ func readUsingSQL(
 			break
 		}
 
+		sliceStart, sliceEnd := executor.CurrentTimeSlice()
+		log.Printf("processing time slice #%v (%v, %v)", executor.NumTimeSlices(), sliceStart, sliceEnd)
+
 		result, err := executor.ResultSet()
 		if err != nil {
 			log.Fatalf("error executing the read query")
@@ -225,14 +228,15 @@ func readUsingSQL(
 		for row := 0; row < result.NumRows(); row++ {
 			col0Value, _ := result.GetString(row, 0)
 			col1Value, _ := result.GetFloat(row, 1)
-			if col1Value != expVal {
-				log.Fatalf("unexpected value: found %v but expected %v", col1Value, expVal)
-			}
-
 			hostNum := globalRowCounter % numUniqHost
 			hostName := fmt.Sprintf("host-%07d", hostNum)
+
+			if col1Value != expVal {
+				log.Fatalf("unexpected value: found (%v, %v) but expected (%v, %v) at row %v", col0Value, col1Value, hostName, expVal, row)
+			}
+
 			if col0Value != hostName {
-				log.Fatalf("unexpected value: found %v but expected %v", col0Value, hostName)
+				log.Fatalf("unexpected value: found (%v, %v) but expected (%v, %v) at row %v", col0Value, col1Value, hostName, expVal, row)
 			}
 
 			expVal++
@@ -243,6 +247,8 @@ func readUsingSQL(
 			log.Printf("reached end")
 		}
 	}
+	log.Printf("used %v batches to process the timespan", executor.NumBatchesExecuted())
+	log.Printf("used %v time slices to process the timespan", executor.NumTimeSlices())
 }
 
 func writeSF(sf *client.M3DBSeriesFamily,

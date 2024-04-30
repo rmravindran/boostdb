@@ -1,6 +1,7 @@
 package core
 
 import (
+	"encoding/hex"
 	"fmt"
 	"strings"
 
@@ -69,4 +70,9 @@ func GetSymbolTableName(qualifiedSeriesName string) string {
 	}
 
 	return symTableName
+}
+
+// Byte array to hex convert helper (used for easy printing)
+func ByteArrayToHex(bytes []byte) string {
+	return hex.EncodeToString(bytes)
 }
