@@ -354,16 +354,17 @@ func (bsi *BoostSeriesIterator) fetchAndUpdateCache(shardIter *SeriesShardIterat
 		currDp, tUnit, currAnnotation := shardIter.seriesIter.Current()
 		shardIter.dp = currDp
 		shardIter.timeUnit = tUnit
-		shardIter.annotation = currAnnotation
+		shardIter.annotation = make(ts.Annotation, len(currAnnotation))
+		copy(shardIter.annotation, currAnnotation)
 		shardIter.hasRead = true
 		if bsi.doCache {
 			shardIter.dpCache = append(shardIter.dpCache,
 				CacheDpData{
 					shardIter.dp,
 					shardIter.timeUnit,
-					make(ts.Annotation, 0, len(currAnnotation)),
+					make(ts.Annotation, len(currAnnotation)),
 				})
-			shardIter.dpCache[shardIter.iterIndex].annotation = shardIter.annotation
+			copy(shardIter.dpCache[shardIter.iterIndex].annotation, shardIter.annotation)
 		}
 	}
 }
