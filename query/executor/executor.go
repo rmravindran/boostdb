@@ -630,6 +630,14 @@ func (e *Executor) executeLogicalExpression(
 	parents []*ExecutablePlanNode,
 	prevExecutorState interface{}) (bool, interface{}, error) {
 
+	// Get/Init an executor state
+	var execState NOPExecState
+	if prevExecutorState != nil {
+		execState = prevExecutorState.(NOPExecState)
+	} else {
+		execState = NOPExecState{iteratorPos: make(map[int]*client.BoostSeriesIteratorPosition)}
+	}
+
 	// Iterate through all the series iterators and select all the values
 	// upto the batch size.
 
@@ -644,6 +652,25 @@ func (e *Executor) executeLogicalExpression(
 
 	// Find the select field info that is applicable to each of the parent
 	// plan nodes
+	resultSetFieldIndices := make([]int, 0)
+	for _, parent := range parents {
+		resultSetFieldIndices = append(
+			resultSetFieldIndices, e.planNodeNameToSelectFieldIndex[parent.name])
+	}
+
+	// If the iterator has reached the end (from another use), then restart
+	for _, colIndx := range resultSetFieldIndices {
+		seriesField := &e.resultSetFields[colIndx]
+		iterPos, ok := execState.iteratorPos[colIndx]
+		if !ok {
+			seriesField.seriesIterator.Begin()
+		} else {
+			seriesField.seriesIterator.Seek(iterPos)
+		}
+	}
+
+	// Find the select field info that is applicable to each of the parent
+	// plan nodes
 	whereFieldIndices := make([]int, 0)
 	for _, parent := range parents {
 		whereFieldIndices = append(
@@ -655,6 +682,13 @@ func (e *Executor) executeLogicalExpression(
 	// and then evaluate the expression
 
 	row := 0
+
+	// TODO
+	// - Define a workspace of workspace_size
+	// - Extract at most workspace_size of data for all fields referenced in
+	// where-field list.
+	// - Parallel evaluate all workspace_size rows and get row indices.
+	// - Extract and set the results for fields referenced in resultSet list.
 
 	tmpValues := make([]any, len(e.resultSetFields))
 	for {
