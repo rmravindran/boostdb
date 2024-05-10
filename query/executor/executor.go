@@ -63,6 +63,9 @@ type Executor struct {
 	// Result set fields
 	resultSetFields []SelectFieldInfo
 
+	// Where only fields
+	whereOnlyFields map[string]*SelectFieldInfo
+
 	// PlanNodeName to SelectFieldInfo map
 	planNodeNameToSelectFieldIndex map[string]int
 
@@ -137,6 +140,7 @@ func NewExecutor(
 		seriesIterators:                make(map[string]*SeriesIteratorInfo),
 		whereOpColumnNames:             make([]string, 0),
 		resultSetFields:                make([]SelectFieldInfo, 0),
+		whereOnlyFields:                make(map[string]*SelectFieldInfo),
 		planNodeNameToSelectFieldIndex: make(map[string]int),
 		startTime:                      startTime,
 		endTime:                        endTime,
@@ -493,18 +497,25 @@ func (e *Executor) executeSelectSeriesOp(
 	seriesIterator := seriesIteratorInfo.seriesIterator
 
 	index, ok := e.planNodeNameToSelectFieldIndex[name]
-	if !ok {
-		// TODO error
-		return false, nil, errors.New("select field not found")
+	if ok {
+		e.resultSetFields[index] = SelectFieldInfo{
+			domain:         parents[0].fetchOp.domain,
+			seriesFamily:   source,
+			seriesName:     seriesName,
+			seriesId:       seriesIteratorInfo.seriesId,
+			attributeName:  attributeName,
+			nodeName:       name,
+			seriesIterator: seriesIterator}
+	} else {
+		e.whereOnlyFields[name] = &SelectFieldInfo{
+			domain:         parents[0].fetchOp.domain,
+			seriesFamily:   source,
+			seriesName:     seriesName,
+			seriesId:       seriesIteratorInfo.seriesId,
+			attributeName:  attributeName,
+			nodeName:       name,
+			seriesIterator: seriesIterator}
 	}
-	e.resultSetFields[index] = SelectFieldInfo{
-		domain:         parents[0].fetchOp.domain,
-		seriesFamily:   source,
-		seriesName:     seriesName,
-		seriesId:       seriesIteratorInfo.seriesId,
-		attributeName:  attributeName,
-		nodeName:       name,
-		seriesIterator: seriesIterator}
 
 	//e.planNodeNameToSelectFieldIndex[name] = len(e.resultSetFields) - 1
 
@@ -658,23 +669,49 @@ func (e *Executor) executeLogicalExpression(
 			resultSetFieldIndices, e.planNodeNameToSelectFieldIndex[parent.name])
 	}
 
-	// If the iterator has reached the end (from another use), then restart
-	for _, colIndx := range resultSetFieldIndices {
-		seriesField := &e.resultSetFields[colIndx]
-		iterPos, ok := execState.iteratorPos[colIndx]
-		if !ok {
-			seriesField.seriesIterator.Begin()
-		} else {
-			seriesField.seriesIterator.Seek(iterPos)
-		}
-	}
-
 	// Find the select field info that is applicable to each of the parent
 	// plan nodes
-	whereFieldIndices := make([]int, 0)
+	type WhereFieldInfo struct {
+		name            string
+		whereOnlyField  bool
+		index           int
+		selectFieldInfo *SelectFieldInfo
+	}
+	whereFieldInfos := make([]WhereFieldInfo, 0)
+	numWhereOnlyFields := 0
 	for _, parent := range parents {
-		whereFieldIndices = append(
-			whereFieldIndices, e.planNodeNameToSelectFieldIndex[parent.name])
+		index, ok := e.planNodeNameToSelectFieldIndex[parent.name]
+		var selectFieldInfo *SelectFieldInfo = nil
+		if !ok {
+			selectFieldInfo = e.whereOnlyFields[parent.name]
+			index = numWhereOnlyFields
+			numWhereOnlyFields++
+		} else {
+			selectFieldInfo = &e.resultSetFields[index]
+		}
+		whereFieldInfos = append(
+			whereFieldInfos,
+			WhereFieldInfo{
+				name:            parent.name,
+				whereOnlyField:  !ok,
+				index:           index,
+				selectFieldInfo: selectFieldInfo})
+	}
+	// TODO: This should be workspace_size
+	whereResultSet := base.NewResultSet(e.batchSize)
+	whereResultSet.ReDim(numWhereOnlyFields)
+
+	// If the iterator has reached the end (from another use), then restart
+	for _, whereFieldInfo := range whereFieldInfos {
+		if whereFieldInfo.whereOnlyField {
+			seriesField := e.whereOnlyFields[whereFieldInfo.name]
+			iterPos, ok := execState.iteratorPos[whereFieldInfo.index]
+			if !ok {
+				seriesField.seriesIterator.Begin()
+			} else {
+				seriesField.seriesIterator.Seek(iterPos)
+			}
+		}
 	}
 
 	// Iterate through all the series iterators. Then sent the columns name
@@ -690,41 +727,61 @@ func (e *Executor) executeLogicalExpression(
 	// - Parallel evaluate all workspace_size rows and get row indices.
 	// - Extract and set the results for fields referenced in resultSet list.
 
-	tmpValues := make([]any, len(e.resultSetFields))
+	// Extract the values for all the fields in the where clause
 	for {
-
-		// TODO: We should evaluate the expression first and  only if the
-		// expression is true, then extract the values and attributes since
-		// attribute extraction might be unnecessary for many points.
-
-		// First read all the columns's value into the array.
-		for colIndx, seriesField := range e.resultSetFields {
+		for colIndx, whereFieldInfo := range whereFieldInfos {
 			if fieldsCompleted[colIndx] {
 				continue
 			}
-			if seriesField.seriesIterator.Next() {
-				dp, _, _ := seriesField.seriesIterator.Current()
-				if seriesField.attributeName == "value" {
-					tmpValues[colIndx] = dp.Value
+			if whereFieldInfo.selectFieldInfo.seriesIterator.Next() {
+				whereResultSet.Resize(row + 1)
+				dp, _, _ := whereFieldInfo.selectFieldInfo.seriesIterator.Current()
+				if whereFieldInfo.selectFieldInfo.attributeName == "value" {
+					whereResultSet.Set(row, colIndx, dp.Value)
 				} else {
-					attributes := seriesField.seriesIterator.Attributes()
+					attributes := whereFieldInfo.selectFieldInfo.seriesIterator.Attributes()
 					if attributes != nil {
 						attribute := attributes.Current()
-						if attribute.Name.String() == seriesField.attributeName {
-							e.resultSet.Set(row, colIndx, attribute.Value.String())
+						if attribute.Name.String() == whereFieldInfo.selectFieldInfo.attributeName {
+							whereResultSet.Set(row, colIndx, attribute.Value.String())
 						}
 					}
 				}
+				row++
 			} else {
 				fieldsCompleted[colIndx] = true
 			}
 		}
+		if row == e.batchSize || len(fieldsCompleted) == len(whereFieldInfos) {
+			// Done for now
+			break
+		}
+	}
 
-		for _, colIndx := range whereFieldIndices {
-			seriesField := &e.resultSetFields[colIndx]
-			if seriesField.attributeName == "value" {
-				argName := seriesField.seriesName + ".value"
-				expressionState.SetValue(argName, tmpValues[colIndx])
+	if row == e.batchSize {
+		outOfSpace = true
+	}
+
+	// If the iterator has reached the end (from another use), then restart
+	for _, colIndx := range resultSetFieldIndices {
+		seriesField := &e.resultSetFields[colIndx]
+		iterPos, ok := execState.iteratorPos[colIndx]
+		if !ok {
+			seriesField.seriesIterator.Begin()
+		} else {
+			seriesField.seriesIterator.Seek(iterPos)
+		}
+	}
+
+	// Evaluate the expression for each row
+	fieldsCompleted = make(map[int]bool)
+	resultSetRow := 0
+	for row := 0; row < whereResultSet.NumRows(); row++ {
+		for colIndx, whereFieldInfo := range whereFieldInfos {
+			if whereFieldInfo.selectFieldInfo.attributeName == "value" {
+				argName := whereFieldInfo.selectFieldInfo.seriesName + ".value"
+				val, _ := whereResultSet.GetFloat(row, colIndx)
+				expressionState.SetValue(argName, val)
 			} else {
 				// TODO handle attributes
 			}
@@ -736,22 +793,36 @@ func (e *Executor) executeLogicalExpression(
 		if result.Error() != nil {
 			return false, result.Error(), nil
 		} else if result.Value().(*base.LiteralBoolExpression).Bool() {
-			e.resultSet.Resize(row + 1)
 
-			for colIndx := range e.resultSetFields {
-				e.resultSet.Set(row, colIndx, tmpValues[colIndx])
+			e.resultSet.Resize(resultSetRow + 1)
+
+			// Read all the columns's value into the array.
+			for colIndx, seriesField := range e.resultSetFields {
+				if fieldsCompleted[colIndx] {
+					continue
+				}
+				if seriesField.seriesIterator.Next() {
+					dp, _, _ := seriesField.seriesIterator.Current()
+					if seriesField.attributeName == "value" {
+						e.resultSet.Set(row, colIndx, dp.Value)
+					} else {
+						attributes := seriesField.seriesIterator.Attributes()
+						if attributes != nil && attributes.Next() {
+							attribute := attributes.Current()
+							if attribute.Name.String() == seriesField.attributeName {
+								e.resultSet.Set(row, colIndx, attribute.Value.String())
+							}
+						}
+					}
+				} else {
+					fieldsCompleted[colIndx] = true
+				}
 			}
-			e.resultSize = max(row, e.resultSize)
-			row++
-		}
-		if row == e.batchSize {
-			outOfSpace = true
-			break
-		} else if len(fieldsCompleted) == len(e.resultSetFields) {
-			// All iterators are done
-			break
+
+			resultSetRow++
 		}
 	}
+	e.resultSize = resultSetRow
 
 	return outOfSpace, nil, nil
 }

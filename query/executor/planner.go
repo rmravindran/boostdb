@@ -1,7 +1,9 @@
 package executor
 
 import (
+	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/dominikbraun/graph"
 	"github.com/rmravindran/boostdb/query/base"
@@ -141,69 +143,16 @@ func (p *Planner) GeneratePlan(queryOps *base.QueryOps) *QueryPlan {
 		qp.rootNodes = append(qp.rootNodes, name)
 	}
 
-	// Add select field operations to the graph. The field operations are
-	// dependent on the source fetch operations
-	//selectFieldNames := make([]string, 0)
+	// Process select field operations that are part of the final resultset to
+	// the graph. The field operations are dependent on the source fetch
+	// operations.
 	for _, selectFieldOp := range queryOps.SelectFieldOps() {
-		name := selectFieldOp.SeriesName + "." + selectFieldOp.AttributeName
-		source := selectFieldOp.SourceAlias
 
-		// Apply the first source if the source is empty
-		if source == "" {
-			source = firstSource
-		}
-
-		// Get the alias for the source
-		alias, ok := aliasSourceMap[source]
-		if !ok {
+		err := createSelectFieldOpNode(
+			selectFieldOp, firstSource, aliasSourceMap, true, qp)
+		if err != nil {
 			// TODO return error
-		} else {
-
-			// Name is [SeriesName].[AttributeName]
-			// This needs to a child of the Series Fetch Node. Create a Series
-			// FetchNode whth the SeriesName if doesn't exist already and make
-			// it the child of alias.
-
-			// Create a series fetch node if it doesn't exist
-			qualifiedSeriesName := source + "." + selectFieldOp.SeriesName
-			_, err := qp.qGraph.Vertex(qualifiedSeriesName)
-			if err == graph.ErrVertexNotFound {
-
-				// Series Family Node of this series
-				familyNode, err := qp.qGraph.Vertex(alias)
-				if err != nil {
-					// TODO return error
-					return nil
-				}
-
-				// Create a series fetch node
-				err = qp.qGraph.AddVertex(NewFetchSeriesPlanNode(
-					qualifiedSeriesName,
-					familyNode.fetchOp.domain,
-					familyNode.fetchOp.seriesFamily))
-				if err != nil {
-					// TODO return error
-					return nil
-				}
-
-				// Add edge from the source fetch node to the series
-				// fetch node
-				err = qp.qGraph.AddEdge(alias, qualifiedSeriesName)
-				if err != nil {
-					// TODO return error
-					return nil
-				}
-			}
-
-			qp.qGraph.AddVertex(NewSelectPlanNode(name, source, name))
-			qp.selectFieldNames = append(qp.selectFieldNames, name)
-
-			// Create an edge from the series fetch node to the select node
-			err = qp.qGraph.AddEdge(qualifiedSeriesName, name)
-			if err != nil {
-				// TODO return error
-				return nil
-			}
+			return nil
 		}
 	}
 
@@ -255,11 +204,25 @@ func (p *Planner) GeneratePlan(queryOps *base.QueryOps) *QueryPlan {
 
 					_, err := qp.qGraph.Vertex(name)
 					if err == graph.ErrVertexNotFound {
-						name = firstSource + "." + name
-						_, err = qp.qGraph.Vertex(name)
+						qualifiedName := firstSource + "." + name
+						_, err = qp.qGraph.Vertex(qualifiedName)
 						if err != nil {
-							prepareHasError = true
-							return
+							// Split the string name into series name and attribute
+							// name by using the "." separator
+							parts := strings.Split(name, ".")
+
+							// This field is not part of the select list, we
+							// need to add it to the select list
+							err := createSelectFieldOpNode(
+								base.SelectFieldOp{
+									SeriesName:    parts[0],
+									AttributeName: parts[1],
+									SourceAlias:   firstSource,
+								}, firstSource, aliasSourceMap, false, qp)
+							if err != nil {
+								prepareHasError = true
+								return
+							}
 						}
 					}
 
@@ -277,6 +240,68 @@ func (p *Planner) GeneratePlan(queryOps *base.QueryOps) *QueryPlan {
 	}
 
 	return qp
+}
+
+func createSelectFieldOpNode(selectFieldOp base.SelectFieldOp, firstSource string, aliasSourceMap map[string]string, isResultSetField bool, qp *QueryPlan) error {
+	name := selectFieldOp.SeriesName + "." + selectFieldOp.AttributeName
+	source := selectFieldOp.SourceAlias
+
+	// Apply the first source if the source is empty
+	if source == "" {
+		source = firstSource
+	}
+
+	// Get the alias for the source
+	alias, ok := aliasSourceMap[source]
+	if !ok {
+		return errors.New("source alias not found")
+	} else {
+
+		// Name is [SeriesName].[AttributeName]
+		// This needs to a child of the Series Fetch Node. Create a Series
+		// FetchNode whth the SeriesName if doesn't exist already and make
+		// it the child of alias.
+		// Create a series fetch node if it doesn't exist
+		qualifiedSeriesName := source + "." + selectFieldOp.SeriesName
+		_, err := qp.qGraph.Vertex(qualifiedSeriesName)
+		if err == graph.ErrVertexNotFound {
+
+			// Series Family Node of this series
+			familyNode, err := qp.qGraph.Vertex(alias)
+			if err != nil {
+				return errors.New("series family not found")
+			}
+
+			// Create a series fetch node
+			err = qp.qGraph.AddVertex(NewFetchSeriesPlanNode(
+				qualifiedSeriesName,
+				familyNode.fetchOp.domain,
+				familyNode.fetchOp.seriesFamily))
+			if err != nil {
+				return errors.New("could not add fetch node")
+			}
+
+			// Add edge from the source fetch node to the series fetch node
+			err = qp.qGraph.AddEdge(alias, qualifiedSeriesName)
+			if err != nil {
+				// TODO return error
+				return errors.New("could not add series fetch node dependecy")
+			}
+		}
+
+		qp.qGraph.AddVertex(NewSelectPlanNode(name, source, name))
+
+		if isResultSetField {
+			qp.selectFieldNames = append(qp.selectFieldNames, name)
+		}
+
+		// Create an edge from the series fetch node to the select node
+		err = qp.qGraph.AddEdge(qualifiedSeriesName, name)
+		if err != nil {
+			return errors.New("could not add select node dependecy")
+		}
+	}
+	return nil
 }
 
 // Return the nodes in the query plan with depths less than the specified depth

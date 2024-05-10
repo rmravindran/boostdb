@@ -112,7 +112,7 @@ func main() {
 	defer pprof.StopCPUProfile()
 
 	// Write and read large table data
-	writeAndReadLargeTableData(session, 50000)
+	writeAndReadLargeTableData(session, 1000)
 }
 
 func writeAndReadLargeTableData(session m3client.Session, count int) {
@@ -177,6 +177,7 @@ func readUsingSQL(
 
 	//sqlQuery := fmt.Sprintf("SELECT %s.host, %s FROM myAppDomain.%s", seriesName, seriesName, seriesFamily)
 	sqlQuery := fmt.Sprintf("SELECT %s.host, %s FROM myAppDomain.%s WHERE %s < 100.0", seriesName, seriesName, seriesFamily, seriesName)
+	//sqlQuery := fmt.Sprintf("SELECT %s.host FROM myAppDomain.%s WHERE %s < 100.0", seriesName, seriesFamily, seriesName)
 
 	parser := parser.NewParser()
 	queryOps, err := parser.Parse(sqlQuery)
@@ -210,7 +211,7 @@ func readUsingSQL(
 	for {
 		err, hasResult := executor.Execute()
 		if err != nil {
-			log.Fatalf("error executing the read query")
+			log.Fatalf("error executing the read query. %s", err)
 		}
 
 		// Nothing more to do
@@ -223,7 +224,7 @@ func readUsingSQL(
 
 		result, err := executor.ResultSet()
 		if err != nil {
-			log.Fatalf("error executing the read query")
+			log.Fatalf("error executing the read query. %s", err)
 		}
 		for row := 0; row < result.NumRows(); row++ {
 			col0Value, _ := result.GetString(row, 0)
