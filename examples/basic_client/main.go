@@ -175,8 +175,8 @@ func readUsingSQL(
 	defer timer("read-large-series-with-attributes-using-sql")()
 	log.Printf("------ read large data (with attributes) using sql from db (%v, %v) ------", startTime, endTime)
 
-	sqlQuery := fmt.Sprintf("SELECT %s.host, %s FROM myAppDomain.%s", seriesName, seriesName, seriesFamily)
-	//sqlQuery := fmt.Sprintf("SELECT %s.host, %s FROM myAppDomain.%s WHERE %s < 100.0", seriesName, seriesName, seriesFamily, seriesName)
+	//sqlQuery := fmt.Sprintf("SELECT %s.host, %s FROM myAppDomain.%s", seriesName, seriesName, seriesFamily)
+	sqlQuery := fmt.Sprintf("SELECT %s.host, %s FROM myAppDomain.%s WHERE %s < 100.0", seriesName, seriesName, seriesFamily, seriesName)
 
 	parser := parser.NewParser()
 	queryOps, err := parser.Parse(sqlQuery)
