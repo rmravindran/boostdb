@@ -30,8 +30,23 @@ type SelectFieldInfo struct {
 	seriesIterator *client.BoostSeriesIterator
 }
 
-type NOPExecState struct {
+// Return the fully qualified series name from the select field info
+func (s *SelectFieldInfo) fullyQualifiedSeriesName() string {
+	return s.domain + "." + s.seriesFamily + "." + s.seriesName
+}
+
+// Return the fully qualifed select field name from the series iterator info
+func (s *SelectFieldInfo) fullyQualifiedFieldName() string {
+	return s.domain + "." + s.seriesFamily + "." + s.seriesName + "." + s.attributeName
+}
+
+type NOPWhereExecState struct {
 	iteratorPos map[int]*client.BoostSeriesIteratorPosition
+}
+
+type LogicalWhereExecState struct {
+	whereIterPos map[int]*client.BoostSeriesIteratorPosition
+	iteratorPos  map[int]*client.BoostSeriesIteratorPosition
 }
 
 // Callback function type that return the distribution factor for a series
@@ -500,7 +515,7 @@ func (e *Executor) executeSelectSeriesOp(
 	if ok {
 		e.resultSetFields[index] = SelectFieldInfo{
 			domain:         parents[0].fetchOp.domain,
-			seriesFamily:   source,
+			seriesFamily:   seriesIteratorInfo.seriesFamily,
 			seriesName:     seriesName,
 			seriesId:       seriesIteratorInfo.seriesId,
 			attributeName:  attributeName,
@@ -509,7 +524,7 @@ func (e *Executor) executeSelectSeriesOp(
 	} else {
 		e.whereOnlyFields[name] = &SelectFieldInfo{
 			domain:         parents[0].fetchOp.domain,
-			seriesFamily:   source,
+			seriesFamily:   seriesIteratorInfo.seriesFamily,
 			seriesName:     seriesName,
 			seriesId:       seriesIteratorInfo.seriesId,
 			attributeName:  attributeName,
@@ -552,11 +567,11 @@ func (e *Executor) executeNOPFilterExpression(
 	parents []*ExecutablePlanNode,
 	prevExecutorState interface{}) (bool, interface{}, error) {
 
-	var execState NOPExecState
+	var execState NOPWhereExecState
 	if prevExecutorState != nil {
-		execState = prevExecutorState.(NOPExecState)
+		execState = prevExecutorState.(NOPWhereExecState)
 	} else {
-		execState = NOPExecState{iteratorPos: make(map[int]*client.BoostSeriesIteratorPosition)}
+		execState = NOPWhereExecState{iteratorPos: make(map[int]*client.BoostSeriesIteratorPosition)}
 	}
 
 	// Iterate through all the series iterators and select all the values
@@ -642,11 +657,13 @@ func (e *Executor) executeLogicalExpression(
 	prevExecutorState interface{}) (bool, interface{}, error) {
 
 	// Get/Init an executor state
-	var execState NOPExecState
+	var execState LogicalWhereExecState
 	if prevExecutorState != nil {
-		execState = prevExecutorState.(NOPExecState)
+		execState = prevExecutorState.(LogicalWhereExecState)
 	} else {
-		execState = NOPExecState{iteratorPos: make(map[int]*client.BoostSeriesIteratorPosition)}
+		execState = LogicalWhereExecState{
+			whereIterPos: make(map[int]*client.BoostSeriesIteratorPosition),
+			iteratorPos:  make(map[int]*client.BoostSeriesIteratorPosition)}
 	}
 
 	// Iterate through all the series iterators and select all the values
@@ -663,17 +680,8 @@ func (e *Executor) executeLogicalExpression(
 
 	// Find the select field info that is applicable to each of the parent
 	// plan nodes
-	resultSetFieldIndices := make([]int, 0)
-	for _, parent := range parents {
-		resultSetFieldIndices = append(
-			resultSetFieldIndices, e.planNodeNameToSelectFieldIndex[parent.name])
-	}
-
-	// Find the select field info that is applicable to each of the parent
-	// plan nodes
 	type WhereFieldInfo struct {
 		name            string
-		whereOnlyField  bool
 		index           int
 		selectFieldInfo *SelectFieldInfo
 	}
@@ -693,7 +701,6 @@ func (e *Executor) executeLogicalExpression(
 			whereFieldInfos,
 			WhereFieldInfo{
 				name:            parent.name,
-				whereOnlyField:  !ok,
 				index:           index,
 				selectFieldInfo: selectFieldInfo})
 	}
@@ -701,16 +708,17 @@ func (e *Executor) executeLogicalExpression(
 	whereResultSet := base.NewResultSet(e.batchSize)
 	whereResultSet.ReDim(numWhereOnlyFields)
 
+	// Iterator row reference to move them to the next row
+	iterCurrentRow := make(map[string]int)
+
 	// If the iterator has reached the end (from another use), then restart
 	for _, whereFieldInfo := range whereFieldInfos {
-		if whereFieldInfo.whereOnlyField {
-			seriesField := e.whereOnlyFields[whereFieldInfo.name]
-			iterPos, ok := execState.iteratorPos[whereFieldInfo.index]
-			if !ok {
-				seriesField.seriesIterator.Begin()
-			} else {
-				seriesField.seriesIterator.Seek(iterPos)
-			}
+		iterPos, ok := execState.whereIterPos[whereFieldInfo.index]
+		iterCurrentRow[whereFieldInfo.selectFieldInfo.fullyQualifiedSeriesName()] = -1
+		if !ok {
+			whereFieldInfo.selectFieldInfo.seriesIterator.Begin()
+		} else {
+			whereFieldInfo.selectFieldInfo.seriesIterator.Seek(iterPos)
 		}
 	}
 
@@ -720,25 +728,25 @@ func (e *Executor) executeLogicalExpression(
 
 	row := 0
 
-	// TODO
-	// - Define a workspace of workspace_size
-	// - Extract at most workspace_size of data for all fields referenced in
-	// where-field list.
-	// - Parallel evaluate all workspace_size rows and get row indices.
-	// - Extract and set the results for fields referenced in resultSet list.
-
 	// Extract the values for all the fields in the where clause
 	for {
+		atleastOneNonNullCol := false
 		for colIndx, whereFieldInfo := range whereFieldInfos {
 			if fieldsCompleted[colIndx] {
 				continue
 			}
-			if whereFieldInfo.selectFieldInfo.seriesIterator.Next() {
+
+			hasSomething := moveIteratorToRow(iterCurrentRow, whereFieldInfo.selectFieldInfo, row)
+			if hasSomething {
+				atleastOneNonNullCol = true
 				whereResultSet.Resize(row + 1)
 				dp, _, _ := whereFieldInfo.selectFieldInfo.seriesIterator.Current()
 				if whereFieldInfo.selectFieldInfo.attributeName == "value" {
 					whereResultSet.Set(row, colIndx, dp.Value)
 				} else {
+					// TODO: This is suboptimal. We should cache the attributes
+					// from an iterator and then reuse it for all fields referenced
+					// from the same iterator.
 					attributes := whereFieldInfo.selectFieldInfo.seriesIterator.Attributes()
 					if attributes != nil {
 						attribute := attributes.Current()
@@ -747,12 +755,14 @@ func (e *Executor) executeLogicalExpression(
 						}
 					}
 				}
-				row++
 			} else {
 				fieldsCompleted[colIndx] = true
 			}
 		}
-		if row == e.batchSize || len(fieldsCompleted) == len(whereFieldInfos) {
+		if atleastOneNonNullCol {
+			row++
+		}
+		if row >= e.batchSize || len(fieldsCompleted) == len(whereFieldInfos) {
 			// Done for now
 			break
 		}
@@ -762,10 +772,12 @@ func (e *Executor) executeLogicalExpression(
 		outOfSpace = true
 	}
 
+	iterCurrentRow = make(map[string]int)
+
 	// If the iterator has reached the end (from another use), then restart
-	for _, colIndx := range resultSetFieldIndices {
-		seriesField := &e.resultSetFields[colIndx]
+	for colIndx, seriesField := range e.resultSetFields {
 		iterPos, ok := execState.iteratorPos[colIndx]
+		iterCurrentRow[seriesField.fullyQualifiedSeriesName()] = -1
 		if !ok {
 			seriesField.seriesIterator.Begin()
 		} else {
@@ -796,12 +808,13 @@ func (e *Executor) executeLogicalExpression(
 
 			e.resultSet.Resize(resultSetRow + 1)
 
-			// Read all the columns's value into the array.
+			// Read every column values for this row into the resultset array.
 			for colIndx, seriesField := range e.resultSetFields {
 				if fieldsCompleted[colIndx] {
 					continue
 				}
-				if seriesField.seriesIterator.Next() {
+				hasSomething := moveIteratorToRow(iterCurrentRow, &seriesField, row)
+				if hasSomething {
 					dp, _, _ := seriesField.seriesIterator.Current()
 					if seriesField.attributeName == "value" {
 						e.resultSet.Set(row, colIndx, dp.Value)
@@ -820,9 +833,36 @@ func (e *Executor) executeLogicalExpression(
 			}
 
 			resultSetRow++
+		} else {
+			// Skip iterators past this row
+			for _, seriesField := range e.resultSetFields {
+				moveIteratorToRow(iterCurrentRow, &seriesField, row)
+			}
 		}
 	}
 	e.resultSize = resultSetRow
 
-	return outOfSpace, nil, nil
+	// Delete all iterator positions if we are done
+	if !outOfSpace {
+		delete(execState.whereIterPos, 0)
+		delete(execState.iteratorPos, 0)
+	}
+
+	return outOfSpace, execState, nil
+}
+
+// Moves the iterator referenced by the given SELECT field to the specified
+// row. Returns true if the iterator has something at the row, false otherwise.
+// Behavior is undefined if the iterator has already reached the end.
+func moveIteratorToRow(iterCurrentRow map[string]int, selectFieldInfo *SelectFieldInfo, row int) bool {
+	hasSomething := true
+	for iterCurrentRow[selectFieldInfo.fullyQualifiedSeriesName()] < row {
+		hasSomething = selectFieldInfo.seriesIterator.Next()
+		if hasSomething {
+			iterCurrentRow[selectFieldInfo.fullyQualifiedSeriesName()]++
+		} else {
+			break
+		}
+	}
+	return hasSomething
 }
