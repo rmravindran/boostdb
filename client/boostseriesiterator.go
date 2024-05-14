@@ -412,7 +412,6 @@ func (bsi *BoostSeriesIterator) Attributes() ident.TagIterator {
 	}
 
 	if bsi.seriesShardIter[bsi.currentIterIndex].attributeIter != nil {
-		println("early return")
 		return bsi.seriesShardIter[bsi.currentIterIndex].attributeIter
 	}
 
@@ -423,6 +422,10 @@ func (bsi *BoostSeriesIterator) Attributes() ident.TagIterator {
 		println("first read value      : ", bsi.seriesShardIter[bsi.currentIterIndex].dp.Value)
 		println("first read anno size  : ", len(annotation))
 		println("first read anno       : ", core.ByteArrayToHex(annotation))
+	}
+
+	if len(annotation) == 0 {
+		return nil
 	}
 
 	// First 2 bytes the version of the symtable
